@@ -41,3 +41,17 @@ export class ConversationNotFoundError extends Error {
     this.conversationId = conversationId;
   }
 }
+
+export class EmbeddingError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "EmbeddingError";
+  }
+}
+
+export class InvalidMemoryInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidMemoryInputError";
+  }
+}

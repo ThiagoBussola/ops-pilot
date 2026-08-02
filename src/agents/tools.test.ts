@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   createCheckProviderStatusTool,
   createConsultarRunbookTool,
+  createForgetPreferenceTool,
   createListAlertsTool,
   createListIncidentsTool,
   createOpenIncidentTool,
@@ -11,6 +12,9 @@ import {
   createTools,
 } from "./tools.js";
 import { formatProviderStatus, type FetchLike } from "../tools/check-provider-status.js";
+import { runWithChatUser } from "../memory/chat-user-context.js";
+import { FakeEmbedder } from "../memory/fake-embedder.js";
+import { SqliteMemoryStore } from "../memory/memory-store.js";
 import { seedOpsStore } from "../store/seed.js";
 import { SqliteOpsStore } from "../store/sqlite-ops-store.js";
 
@@ -111,6 +115,40 @@ test("createTools registers six tools including check_provider_status", () => {
       "check_provider_status",
     ],
   );
+});
+
+test("createTools with memories registers forget_preference as seventh tool", () => {
+  const store = seededStore();
+  const memories = new SqliteMemoryStore(":memory:", new FakeEmbedder());
+  const tools = createTools(store, memories);
+  assert.equal(tools.length, 7);
+  assert.equal(tools[6]?.name, "forget_preference");
+});
+
+test("forget_preference removes top recall match under ALS", async () => {
+  const embedder = new FakeEmbedder()
+    .setAxis("User prefers prioritizing checkout", 0)
+    .setAxis("checkout priority", 0);
+  const memories = new SqliteMemoryStore(":memory:", embedder);
+  await memories.remember("plantonista", "User prefers prioritizing checkout");
+  const tool = createForgetPreferenceTool(memories);
+
+  const result = await runWithChatUser("plantonista", () =>
+    tool.invoke({ query: "checkout priority" }),
+  );
+  assert.match(String(result), /Forgot preference:/);
+  assert.equal((await memories.recall("plantonista", "checkout priority")).length, 0);
+});
+
+test("forget_preference without ALS returns Error and does not mutate store", async () => {
+  const embedder = new FakeEmbedder().setAxis("keep me", 1);
+  const memories = new SqliteMemoryStore(":memory:", embedder);
+  await memories.remember("plantonista", "keep me");
+  const tool = createForgetPreferenceTool(memories);
+
+  const result = String(await tool.invoke({ query: "keep me" }));
+  assert.match(result, /Error: no active chat user context/);
+  assert.equal((await memories.recall("plantonista", "keep me")).length, 1);
 });
 
 test("check_provider_status tool invoke with fake fetch (no network)", async () => {

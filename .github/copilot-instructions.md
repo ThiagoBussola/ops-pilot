@@ -54,5 +54,5 @@ Specs são artefatos de primeira classe — criadas, revisadas e versionadas jun
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at `specs/007-persistent-conversation/plan.md`.
+at `specs/009-learning-reflector/plan.md`.
 <!-- SPECKIT END -->

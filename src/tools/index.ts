@@ -6,6 +6,7 @@ export {
   createListIncidentsTool,
   createConsultarRunbookTool,
   createCheckProviderStatusTool,
+  createForgetPreferenceTool,
 } from "../agents/tools.js";
 
 export {

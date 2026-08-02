@@ -16,17 +16,22 @@ import { runChat } from "../chat/run-chat.js";
 import {
   ChatTimeoutError,
   ConversationNotFoundError,
+  EmbeddingError,
+  InvalidMemoryInputError,
   UnknownStrategyError,
 } from "../domain/errors.js";
-import type { ConversationStore } from "../domain/types.js";
+import type { ConversationStore, MemoryStore } from "../domain/types.js";
+import type { LearningReflectorFn } from "../memory/learning-reflector.js";
 import type { ReflectionOpts } from "../strategies/reflect.js";
-import { chatRequestSchema } from "./chat-schema.js";
+import { chatRequestSchema, rememberRequestSchema } from "./chat-schema.js";
 
 export interface ChatAppDeps {
   registry: StrategyRegistry;
   conversations: ConversationStore;
+  memories: MemoryStore;
   timeoutMs?: number;
   reflectionOpts?: ReflectionOpts;
+  learningReflector?: LearningReflectorFn;
 }
 
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -90,7 +95,7 @@ export function createApp(deps: ChatAppDeps): Express {
         return;
       }
 
-      const { message, strategy, reflect, conversationId } = parsed.data;
+      const { message, strategy, reflect, conversationId, userId } = parsed.data;
       const resolved = resolveStrategy(
         deps.registry,
         strategy,
@@ -100,9 +105,13 @@ export function createApp(deps: ChatAppDeps): Express {
 
       const result = await runChat(
         deps.conversations,
+        deps.memories,
         resolved,
-        { message, conversationId },
-        { execute: (promise) => runWithTimeout(promise, timeoutMs) },
+        { message, conversationId, userId },
+        {
+          execute: (promise) => runWithTimeout(promise, timeoutMs),
+          learningReflector: deps.learningReflector,
+        },
       );
 
       res.status(200).json({
@@ -110,6 +119,30 @@ export function createApp(deps: ChatAppDeps): Express {
         trace: result.trace,
         metrics: result.metrics,
         conversationId: result.conversationId,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/memories", async (req, res, next) => {
+    try {
+      const parsed = rememberRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: "validation_error",
+          issues: parsed.error.issues,
+        });
+        return;
+      }
+
+      const { userId, fact } = parsed.data;
+      const result = await deps.memories.remember(userId, fact);
+      res.status(result.stored ? 201 : 200).json({
+        id: result.id,
+        stored: result.stored,
+        userId,
+        fact: fact.trim(),
       });
     } catch (error) {
       next(error);
@@ -151,6 +184,22 @@ export function createApp(deps: ChatAppDeps): Express {
       res.status(404).json({
         error: "conversation_not_found",
         conversationId: error.conversationId,
+      });
+      return;
+    }
+
+    if (error instanceof EmbeddingError) {
+      res.status(500).json({
+        error: "internal_error",
+        message: error.message,
+      });
+      return;
+    }
+
+    if (error instanceof InvalidMemoryInputError) {
+      res.status(400).json({
+        error: "validation_error",
+        message: error.message,
       });
       return;
     }

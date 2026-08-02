@@ -6,6 +6,7 @@ import type { ChatOpenAI } from "@langchain/openai";
 
 import type { ReasoningStrategy, StrategyResult, StrategyRunInput } from "../domain/types.js";
 import { buildTraceFromMessages } from "../trace/builder.js";
+import { OPSPILOT_SYSTEM_PROMPT } from "./system-prompt.js";
 
 interface ReactStrategyOptions {
   modelFactory: () => ChatOpenAI;
@@ -28,7 +29,11 @@ export class ReactStrategy implements ReasoningStrategy {
   async run(input: StrategyRunInput): Promise<StrategyResult> {
     const startedAt = Date.now();
     const model = this.modelFactory();
-    const agent = createReactAgent({ llm: model, tools: this.tools });
+    const agent = createReactAgent({
+      llm: model,
+      tools: this.tools,
+      prompt: OPSPILOT_SYSTEM_PROMPT,
+    });
 
     try {
       const messages = [

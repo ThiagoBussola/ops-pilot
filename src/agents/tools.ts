@@ -3,7 +3,8 @@ import { z } from "zod";
 
 import { IncidentNotFoundError, RunbookNotFoundError } from "../domain/errors.js";
 import { normalizeSeverity, SEVERITIES } from "../domain/severity.js";
-import type { OpsStore } from "../domain/types.js";
+import type { MemoryStore, OpsStore } from "../domain/types.js";
+import { getChatUserId } from "../memory/chat-user-context.js";
 import {
   fetchProviderStatus,
   type FetchLike,
@@ -221,8 +222,52 @@ export function createCheckProviderStatusTool(
   );
 }
 
-export function createTools(store: OpsStore): DynamicStructuredTool[] {
-  return [
+const forgetPreferenceSchema = z.object({
+  query: z
+    .string()
+    .min(1)
+    .describe("Descrição da preferência ou fato a remover da memória do usuário atual"),
+});
+
+export function createForgetPreferenceTool(
+  memories: MemoryStore,
+): DynamicStructuredTool<typeof forgetPreferenceSchema> {
+  return tool(
+    async (input) => {
+      const userId = getChatUserId();
+      if (!userId) {
+        return "Error: no active chat user context.";
+      }
+      try {
+        const hits = await memories.recall(userId, input.query);
+        if (hits.length === 0 || !hits[0]) {
+          return "No matching preference found.";
+        }
+        const target = hits[0];
+        const ok = await memories.forget(userId, target.id);
+        if (!ok) {
+          return "Error: could not forget preference.";
+        }
+        return `Forgot preference: ${target.fact}`;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return `Error: ${message}`;
+      }
+    },
+    {
+      name: "forget_preference",
+      description:
+        "Remove uma preferência ou fato previamente memorizado do usuário atual. Quando usar: plantonista pede para esquecer preferência/fato (\"esqueça que priorizo checkout\"). Quando não usar: apagar alertas/incidentes; listar memórias; pedidos operacionais pontuais sem intenção de esquecer preferência.",
+      schema: forgetPreferenceSchema,
+    },
+  );
+}
+
+export function createTools(
+  store: OpsStore,
+  memories?: MemoryStore,
+): DynamicStructuredTool[] {
+  const tools: DynamicStructuredTool[] = [
     createListAlertsTool(store),
     createOpenIncidentTool(store),
     createResolveIncidentTool(store),
@@ -230,4 +275,8 @@ export function createTools(store: OpsStore): DynamicStructuredTool[] {
     createConsultarRunbookTool(store),
     createCheckProviderStatusTool(),
   ];
+  if (memories) {
+    tools.push(createForgetPreferenceTool(memories));
+  }
+  return tools;
 }

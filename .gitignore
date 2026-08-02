@@ -11,3 +11,6 @@ Thumbs.db
 *.swp
 .vscode/
 .idea/
+# Hugging Face / Transformers.js model cache
+.cache/
+models/

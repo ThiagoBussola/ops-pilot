@@ -12,6 +12,7 @@ import type {
   StrategyRunInput,
   TraceEvent,
 } from "../domain/types.js";
+import { OPSPILOT_SYSTEM_PROMPT } from "../agents/system-prompt.js";
 
 interface PlanExecuteOptions {
   modelFactory: () => ChatOpenAI;
@@ -198,7 +199,11 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
       }
 
       const [currentStep, ...remainingPlan] = state.plan;
-      const agent = createReactAgent({ llm: this.modelFactory(), tools: this.tools });
+      const agent = createReactAgent({
+        llm: this.modelFactory(),
+        tools: this.tools,
+        prompt: OPSPILOT_SYSTEM_PROMPT,
+      });
       const result = await agent.invoke(
         {
           messages: [
@@ -254,6 +259,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
               "Decida estritamente entre: adjust, continue, finish.",
               "Escolha finish quando o pedido original já puder ser respondido com o progresso (preencha answer).",
               "A answer de finish deve responder ao pedido original de forma completa (números, serviços, status) — não apenas listar passos.",
+              "A answer de finish DEVE seguir o formato OpsPilot: **Resumo**, depois **Achados** (lista com -), depois **Próximos passos** (máx. 3 ou Nenhum); sem emojis de decoração.",
               "Escolha adjust quando o plano restante precisar de correção (preencha steps com literais preservados).",
               "Escolha continue quando o plano atual ainda estiver válido.",
             ].join(" "),

@@ -57,6 +57,36 @@ export interface ExecutionMetrics {
   latencyMs: number;
   /** Messages from conversation history injected into this turn (HTTP /chat). */
   historyMessages?: number;
+  /** Semantic memories injected into this turn (HTTP /chat). */
+  recalledMemories?: number;
+}
+
+export interface MemoryFact {
+  id: string;
+  userId: string;
+  fact: string;
+  createdAt: number;
+}
+
+export interface RecalledMemory {
+  id: string;
+  fact: string;
+  score: number;
+}
+
+export interface RememberResult {
+  id: string;
+  stored: boolean;
+}
+
+export interface Embedder {
+  embed(text: string): Promise<Float32Array>;
+}
+
+export interface MemoryStore {
+  remember(userId: string, fact: string): Promise<RememberResult>;
+  recall(userId: string, query: string): Promise<RecalledMemory[]>;
+  forget(userId: string, id: string): Promise<boolean>;
 }
 
 export type ConversationMessageRole = "user" | "assistant";

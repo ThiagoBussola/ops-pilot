@@ -1,19 +1,7 @@
-// exemplo para implementação dentro do padrão de reflection
-const verdictSchema = z.object({
-  approved: z.boolean(),
-  feedback: z
-    .string()
-    .describe("se aprovado: o que corrigir, em específico e acionável"),
-});
 
-async function critique(input: string, result: ReasoningResult) {
-  return createModel()
-    .withStructuredOutput(verdictSchema)
-    .invoke([
-      ["system", CRITIC_PROMPT], // avalie APENAS contra as observações do trace e do pedido
-      [
-        "user",
-        `Pedido: ${input}\nObservações: ${observationsOf(result.trace)}\nResposta: ${result.answer}`,
-      ],
-    ]);
+referencia para o recall
+
+async function recall(userId: string, query: string, k = 3): Promise<Memory[]>{
+  cosnt q = await embed(query)
+  return this._all(userId).map(mappedUser => ({ ...mappedUser, score: dot(q, mappedUser.embedding) })).sort((a, b) => b.score - a.score).slice(0, k).filter(mappedUser.score > 0.3) //relevancia minima
 }

@@ -10,8 +10,10 @@ import type {
   StrategyRunInput,
 } from "../domain/types.js";
 import type { CritiqueResult } from "../strategies/reflect.js";
+import { FakeEmbedder } from "../memory/fake-embedder.js";
+import { SqliteMemoryStore } from "../memory/memory-store.js";
 import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
-import { createApp } from "./server.js";
+import { createApp, type ChatAppDeps } from "./server.js";
 
 function fakeStrategy(overrides?: {
   name?: string;
@@ -45,6 +47,20 @@ function memoryConversations() {
   return new SqliteConversationStore(":memory:");
 }
 
+function memoryStore(embedder = new FakeEmbedder()) {
+  return new SqliteMemoryStore(":memory:", embedder);
+}
+
+function testApp(
+  overrides: Partial<ChatAppDeps> & Pick<ChatAppDeps, "registry">,
+): ReturnType<typeof createApp> {
+  return createApp({
+    conversations: memoryConversations(),
+    memories: memoryStore(),
+    ...overrides,
+  });
+}
+
 async function withServer(
   app: ReturnType<typeof createApp>,
   fn: (baseUrl: string) => Promise<void>,
@@ -71,10 +87,14 @@ async function postChat(
   baseUrl: string,
   body: unknown,
 ): Promise<{ status: number; json: Record<string, unknown> }> {
+  const payload =
+    body !== null && typeof body === "object" && !Array.isArray(body)
+      ? { userId: "test-user", ...(body as Record<string, unknown>) }
+      : body;
   const response = await fetch(`${baseUrl}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
   const json = (await response.json()) as Record<string, unknown>;
   return { status: response.status, json };
@@ -83,7 +103,7 @@ async function postChat(
 test("US1: POST /chat happy path with fake react strategy", async () => {
   const react = fakeStrategy({ name: "react" });
   const conversations = memoryConversations();
-  const app = createApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ registry: createRegistry({ react }), conversations });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, { message: "oi" });
@@ -92,10 +112,16 @@ test("US1: POST /chat happy path with fake react strategy", async () => {
     assert.ok(typeof json.conversationId === "string");
     assert.ok(Array.isArray(json.trace));
     assert.ok(json.metrics && typeof json.metrics === "object");
-    const metrics = json.metrics as { llmCalls: number; latencyMs: number; historyMessages: number };
+    const metrics = json.metrics as {
+      llmCalls: number;
+      latencyMs: number;
+      historyMessages: number;
+      recalledMemories: number;
+    };
     assert.equal(metrics.llmCalls, 1);
     assert.equal(typeof metrics.latencyMs, "number");
     assert.equal(metrics.historyMessages, 0);
+    assert.equal(metrics.recalledMemories, 0);
     assert.equal(react.calls, 1);
     assert.equal(conversations.lastMessages(String(json.conversationId), 12).length, 2);
   });
@@ -104,9 +130,8 @@ test("US1: POST /chat happy path with fake react strategy", async () => {
 test("US1: explicit strategy selects registry entry", async () => {
   const react = fakeStrategy({ name: "react" });
   const other = fakeStrategy({ name: "other" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react, other }),
-    conversations: memoryConversations(),
   });
 
   await withServer(app, async (baseUrl) => {
@@ -124,7 +149,7 @@ test("US1: explicit strategy selects registry entry", async () => {
 test("US1: reflect true with approving critic adds critique overhead", async () => {
   const react = fakeStrategy({ name: "react" });
   const criticCalls: number[] = [];
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
     reflectionOpts: {
@@ -152,7 +177,7 @@ test("US1: reflect true with approving critic adds critique overhead", async () 
 
 test("US2: invalid body returns 400 with zod issues", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
   });
@@ -173,7 +198,7 @@ test("US2: invalid body returns 400 with zod issues", async () => {
 
 test("US2: unknown strategy returns 422", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
   });
@@ -192,7 +217,7 @@ test("US2: unknown strategy returns 422", async () => {
 
 test("US2: omitted strategy and reflect default to react without reflection", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
   });
@@ -211,7 +236,7 @@ test("US2: omitted strategy and reflect default to react without reflection", as
 
 test("US3: slow strategy exceeds injected timeout -> 504", async () => {
   const react = fakeStrategy({ name: "react", delayMs: 80 });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
     timeoutMs: 20,
@@ -227,7 +252,7 @@ test("US3: slow strategy exceeds injected timeout -> 504", async () => {
 
 test("US3: fast strategy returns 200 under timeout", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
     timeoutMs: 5_000,
@@ -241,7 +266,7 @@ test("US3: fast strategy returns 200 under timeout", async () => {
 
 test("US4: custom-named fake-only registry works end-to-end", async () => {
   const custom = fakeStrategy({ name: "custom-ops" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ "custom-ops": custom }),
     conversations: memoryConversations(),
   });
@@ -271,7 +296,7 @@ test("US4: resolveStrategy with reflect returns reflect: name", () => {
 
 test("POST /chat accepts curl-style body without application/json Content-Type", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
   });
@@ -280,7 +305,7 @@ test("POST /chat accepts curl-style body without application/json Content-Type",
     const response = await fetch(`${baseUrl}/chat`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: '{"message":"quais incidentes estão abertos?"}',
+      body: '{"message":"quais incidentes estão abertos?","userId":"test-user"}',
     });
     const json = (await response.json()) as Record<string, unknown>;
     assert.equal(response.status, 200);
@@ -288,10 +313,127 @@ test("POST /chat accepts curl-style body without application/json Content-Type",
   });
 });
 
+test("semantic memory: missing userId returns 400", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const app = testApp({ registry: createRegistry({ react }) });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "oi",
+      userId: undefined,
+    });
+    assert.equal(status, 400);
+    assert.equal(json.error, "validation_error");
+    assert.equal(react.calls, 0);
+
+    const empty = await postChat(baseUrl, { message: "oi", userId: "" });
+    assert.equal(empty.status, 400);
+    assert.equal(react.calls, 0);
+  });
+});
+
+test("semantic memory: injects Relevant memories into strategy message", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const embedder = new FakeEmbedder()
+    .setAxis("checkout latency high", 0)
+    .setAxis("how is payment slow?", 0);
+  const memories = memoryStore(embedder);
+  await memories.remember("plantonista", "checkout latency high");
+
+  const app = testApp({
+    registry: createRegistry({ react }),
+    memories,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "how is payment slow?",
+      userId: "plantonista",
+    });
+    assert.equal(status, 200);
+    const metrics = json.metrics as { recalledMemories: number };
+    assert.ok(metrics.recalledMemories >= 1);
+    assert.match(react.inputs[0]?.message ?? "", /Relevant memories:/);
+    assert.match(react.inputs[0]?.message ?? "", /checkout latency high/);
+    assert.match(react.inputs[0]?.message ?? "", /Current message:\nhow is payment slow\?/);
+  });
+});
+
+test("semantic memory: no qualifying memories leaves message unchanged", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const app = testApp({ registry: createRegistry({ react }) });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, { message: "hello alone" });
+    assert.equal(status, 200);
+    const metrics = json.metrics as { recalledMemories: number };
+    assert.equal(metrics.recalledMemories, 0);
+    assert.equal(react.inputs[0]?.message, "hello alone");
+  });
+});
+
+test("learning reflector: async remember after 200 with fake reflector", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const embedder = new FakeEmbedder()
+    .setAxis("User prefers prioritizing checkout", 0)
+    .setAxis("what are my priorities?", 0);
+  const memories = memoryStore(embedder);
+  const app = testApp({
+    registry: createRegistry({ react }),
+    memories,
+    learningReflector: async () => ({
+      hasLearning: true,
+      fact: "User prefers prioritizing checkout",
+    }),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { status } = await postChat(baseUrl, {
+      message: "sempre priorize checkout",
+      userId: "learner",
+    });
+    assert.equal(status, 200);
+    // Flush scheduled learning
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const recalled = await memories.recall("learner", "what are my priorities?");
+    assert.ok(recalled.some((m) => /checkout/i.test(m.fact)));
+  });
+});
+
+test("POST /memories stores fact for userId", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const fact = "prefere os alertas críticos primeiro";
+  const embedder = new FakeEmbedder().setAxis(fact, 2);
+  const memories = memoryStore(embedder);
+  const app = testApp({ registry: createRegistry({ react }), memories });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/memories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId: "u-42", fact }),
+    });
+    const json = (await response.json()) as Record<string, unknown>;
+    assert.equal(response.status, 201);
+    assert.equal(json.stored, true);
+    assert.equal(json.userId, "u-42");
+    assert.equal(json.fact, fact);
+    assert.ok(typeof json.id === "string");
+
+    const missing = await fetch(`${baseUrl}/memories`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ userId: "u-42" }),
+    });
+    assert.equal(missing.status, 400);
+  });
+});
+
 test("persistent: continue conversation reuses conversationId and injects history", async () => {
   const react = fakeStrategy({ name: "react" });
   const conversations = memoryConversations();
-  const app = createApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ registry: createRegistry({ react }), conversations });
 
   await withServer(app, async (baseUrl) => {
     const first = await postChat(baseUrl, { message: "turno1" });
@@ -314,7 +456,7 @@ test("persistent: continue conversation reuses conversationId and injects histor
 
 test("persistent: unknown conversationId returns 404 without running strategy", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
   });
@@ -334,7 +476,7 @@ test("persistent: unknown conversationId returns 404 without running strategy", 
 
 test("persistent: invalid conversationId returns 400", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({
+  const app = testApp({
     registry: createRegistry({ react }),
     conversations: memoryConversations(),
   });
@@ -357,7 +499,7 @@ test("persistent: historyMessages capped at 12", async () => {
   for (let i = 0; i < 15; i += 1) {
     conversations.append(cid, i % 2 === 0 ? "user" : "assistant", `m${i}`);
   }
-  const app = createApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ registry: createRegistry({ react }), conversations });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, {
@@ -379,7 +521,7 @@ test("persistent: throwing strategy does not append assistant", async () => {
       throw new Error("boom");
     },
   });
-  const app = createApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ registry: createRegistry({ react }), conversations });
 
   await withServer(app, async (baseUrl) => {
     const before = conversations.create();
