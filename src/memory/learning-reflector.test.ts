@@ -5,7 +5,11 @@ import type { MemoryStore, RememberResult } from "../domain/types.js";
 import { FakeEmbedder } from "./fake-embedder.js";
 import {
   LEARNING_REFLECTOR_PROMPT,
+  PLANTAO_ORG_MEMORY_FACT,
+  buildMemoryRecallQuery,
+  prepareMemoriesForTurn,
   scheduleLearning,
+  suggestsPlantaoOrganization,
   type LearningReflectorFn,
 } from "./learning-reflector.js";
 import { SqliteMemoryStore } from "./memory-store.js";
@@ -193,11 +197,59 @@ test("US2 fixtures: durable learns; punctual and secret do not", async () => {
   }
 });
 
-test("LEARNING_REFLECTOR_PROMPT documents durable / anti-pontual / anti-segredo", () => {
+test("LEARNING_REFLECTOR_PROMPT documents durable / anti-pontual / anti-segredo / organizar plantão", () => {
   assert.match(LEARNING_REFLECTOR_PROMPT, /DURÁVEIS|DURÁVEL/i);
   assert.match(LEARNING_REFLECTOR_PROMPT, /PONTUAIS|pontual/i);
   assert.match(LEARNING_REFLECTOR_PROMPT, /SEGREDOS|segredo|API keys|senhas/i);
   assert.match(LEARNING_REFLECTOR_PROMPT, /liste alertas|abra um incidente/i);
+  assert.match(LEARNING_REFLECTOR_PROMPT, /ORGANIZAR|organiz/i);
+  assert.match(LEARNING_REFLECTOR_PROMPT, /severidade|prioridade/i);
+  assert.match(LEARNING_REFLECTOR_PROMPT, /critical/);
+});
+
+test("suggestsPlantaoOrganization detects organize + listing", () => {
+  assert.equal(
+    suggestsPlantaoOrganization("organize meu plantão, mostre os incidentes em aberto"),
+    true,
+  );
+  assert.equal(suggestsPlantaoOrganization("liste alertas firing"), false);
+  assert.equal(
+    suggestsPlantaoOrganization("liste incidentes por prioridade"),
+    true,
+  );
+});
+
+test("buildMemoryRecallQuery enriches organization asks", () => {
+  const q = buildMemoryRecallQuery("organize meu plantão");
+  assert.match(q, /organize meu plantão/);
+  assert.match(q, /severidade/i);
+  assert.equal(buildMemoryRecallQuery("oi"), "oi");
+});
+
+test("prepareMemoriesForTurn awaits learn then recalls org preference", async () => {
+  const userMessage = "organize meu plantão, mostre os incidentes em aberto";
+  const recallQuery = buildMemoryRecallQuery(userMessage);
+  const embedder = new FakeEmbedder()
+    .setAxis(PLANTAO_ORG_MEMORY_FACT, 0)
+    .setAxis(recallQuery, 0);
+  const store = new SqliteMemoryStore(":memory:", embedder);
+  const reflector: LearningReflectorFn = async () => ({
+    hasLearning: true,
+    fact: PLANTAO_ORG_MEMORY_FACT,
+  });
+
+  const recalled = await prepareMemoriesForTurn({
+    reflector,
+    memories: store,
+    userId: "war-room",
+    userMessage,
+  });
+
+  assert.ok(recalled.length >= 1);
+  assert.ok(
+    recalled.some((m) => /severidade|critical/i.test(m.fact)),
+    `expected org fact in recall, got ${JSON.stringify(recalled)}`,
+  );
 });
 
 test("formatMemoriesForPrompt still available (sanity)", () => {

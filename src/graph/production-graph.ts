@@ -33,7 +33,7 @@ import {
 } from "../llm/model-telemetry.js";
 import { runWithChatUser } from "../memory/chat-user-context.js";
 import {
-  scheduleLearning,
+  prepareMemoriesForTurn,
   type LearningReflectorFn,
 } from "../memory/learning-reflector.js";
 import {
@@ -204,7 +204,12 @@ export function createProductionGraph(deps: ProductionGraphDeps) {
 
     const history = deps.conversations.lastMessages(conversationId, HISTORY_LIMIT);
     const summaryRecord = deps.conversations.getSummary(conversationId);
-    const recalled = await deps.memories.recall(state.userId, state.message);
+    const recalled = await prepareMemoriesForTurn({
+      reflector: deps.learningReflector,
+      memories: deps.memories,
+      userId: state.userId,
+      userMessage: state.message,
+    });
 
     const built = buildContext(
       {
@@ -308,21 +313,11 @@ export function createProductionGraph(deps: ProductionGraphDeps) {
     runStrategy(state, deps.strategies.reflect, "reflect");
 
   /**
-   * Resposta: grava histórico, dispara reflector, persiste audit + log metadata.
+   * Resposta: grava histórico, persiste audit + log metadata.
+   * Learning runs in prepareMemoriesForTurn (await for organize; else deferred).
    */
   const answerNode = async (state: GraphStateType) => {
     deps.conversations.append(state.conversationId, "assistant", state.answer);
-
-    if (deps.learningReflector) {
-      void scheduleLearning({
-        reflector: deps.learningReflector,
-        memories: deps.memories,
-        userId: state.userId,
-        userMessage: state.message,
-      }).catch(() => {
-        /* fail-safe */
-      });
-    }
 
     const built = state.built;
     const strategyMetrics = state.strategyMetrics ?? { llmCalls: 0, latencyMs: 0 };

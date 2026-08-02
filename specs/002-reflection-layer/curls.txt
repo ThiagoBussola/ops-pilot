@@ -25,3 +25,11 @@ curl -s localhost:3000/chat -X POST \
 curl -s localhost:3000/chat -H 'content-type: application/json' \
   -d '{"message":"monte o plano de resposta ao incidente do checkout, em ordem","userId":"u-42"}' \
   | jq '.metrics|{route,routeReason}'
+
+
+  RID=$(curl -s localhost:3000/chat -X POST \
+  -H 'content-type: application/json' \
+  -d '{"message":"resolva o incidente mais antigo","userId":"U-42"}' \
+  | jq -r .requestId)
+
+curl -s "localhost:3000/requests/$RID" | jq .

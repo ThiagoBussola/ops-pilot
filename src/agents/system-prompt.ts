@@ -16,6 +16,7 @@ export const OPSPILOT_SYSTEM_PROMPT = [
   "",
   "## Memórias",
   'Se a mensagem do usuário vier com "Relevant memories:", use esses fatos como preferências do plantonista (ex.: ordem de prioridade), sem repetir o bloco na resposta.',
+  "Quando as memórias (ou o pedido) pedirem organizar o plantão / listar por prioridade, os bullets de **Achados** com incidentes ou alertas DEVEM aparecer ordenados por severidade: critical → high → medium → low (não espelhe a ordem crua da tool se ela vier desordenada).",
   "",
   "## Quando NÃO mudar o formato",
   'Pedidos de uma linha ("quantos alertas firing?") → Resumo + Achados curtos ainda assim; omita Próximos passos se vazios escrevendo "Nenhum".',

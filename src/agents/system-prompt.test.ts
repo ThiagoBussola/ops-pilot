@@ -14,6 +14,7 @@ test("OPSPILOT_SYSTEM_PROMPT defines Resumo / Achados / Próximos passos", () =>
   assert.match(OPSPILOT_SYSTEM_PROMPT, /\*\*Próximos passos\*\*/);
   assert.match(OPSPILOT_SYSTEM_PROMPT, /Relevant memories/);
   assert.match(OPSPILOT_SYSTEM_PROMPT, /Sem emojis/);
+  assert.match(OPSPILOT_SYSTEM_PROMPT, /critical → high → medium → low/);
 });
 
 test("ReactStrategy wires OPSPILOT_SYSTEM_PROMPT into createReactAgent", () => {
