@@ -43,3 +43,30 @@ test("append and lastMessages throw ConversationNotFoundError for unknown id", (
   assert.throws(() => store.append(missing, "user", "x"), ConversationNotFoundError);
   assert.throws(() => store.lastMessages(missing, 12), ConversationNotFoundError);
 });
+
+test("countMessages and messagesAscending + summary upsert", () => {
+  const store = new SqliteConversationStore(":memory:");
+  const id = store.create();
+  assert.equal(store.countMessages(id), 0);
+  for (let i = 0; i < 10; i += 1) {
+    store.append(id, i % 2 === 0 ? "user" : "assistant", `m${i}`);
+  }
+  assert.equal(store.countMessages(id), 10);
+  const batch = store.messagesAscending(id, 0, 8);
+  assert.equal(batch.length, 8);
+  assert.equal(batch[0]?.content, "m0");
+  assert.equal(batch[7]?.content, "m7");
+  const next = store.messagesAscending(id, 8, 8);
+  assert.equal(next.length, 2);
+  assert.equal(next[0]?.content, "m8");
+
+  assert.equal(store.getSummary(id), null);
+  store.upsertSummary(id, "resumo-1", 8);
+  const s1 = store.getSummary(id);
+  assert.ok(s1);
+  assert.equal(s1.text, "resumo-1");
+  assert.equal(s1.coveredCount, 8);
+  store.upsertSummary(id, "resumo-2", 16);
+  assert.equal(store.getSummary(id)?.text, "resumo-2");
+  assert.equal(store.getSummary(id)?.coveredCount, 16);
+});

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 30 turnos de plantão no mesmo conversationId via POST /chat.
 # Turno 3 planta a decisão "o freeze de deploys termina dia 15".
-# Estima tokens por turno (~4 chars/token) e imprime conversationId no final.
+# Imprime promptTokens real (metrics) por turno; estima req/res local (~floor chars/4).
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:3000}"
@@ -51,15 +51,15 @@ estimate_tokens() {
   local text="$1"
   local chars
   chars=$(printf '%s' "$text" | wc -c | tr -d ' ')
-  # arredonda para cima: (chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN
-  echo $(( (chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN ))
+  # floor: alinhado a src/context/tokens.ts (Math.floor(chars/4))
+  echo $(( chars / CHARS_PER_TOKEN ))
 }
 
 CONVERSATION_ID=""
 TOTAL_TOKENS=0
 
 echo "Base: $BASE_URL | userId: $USER_ID | turnos: ${#MESSAGES[@]}"
-echo "Estimativa: ~${CHARS_PER_TOKEN} chars/token (request+response)"
+echo "Métricas: promptTokens real (metrics); estimativa local req/res ~${CHARS_PER_TOKEN} chars/token (floor)"
 echo "---"
 
 for i in "${!MESSAGES[@]}"; do
@@ -96,9 +96,12 @@ for i in "${!MESSAGES[@]}"; do
   res_tokens=$(estimate_tokens "$answer")
   turn_tokens=$((req_tokens + res_tokens))
   TOTAL_TOKENS=$((TOTAL_TOKENS + turn_tokens))
+  prompt_tokens=$(echo "$response" | jq -r '.metrics.promptTokens // "n/a"')
 
-  printf 'turno %02d | req≈%d tok | res≈%d tok | total_turno≈%d | recalled=%s | hist=%s\n' \
+  printf 'turno %02d | conversationId=%s | promptTokens=%s | req≈%d tok | res≈%d tok | total_turno≈%d | recalled=%s | hist=%s\n' \
     "$turn" \
+    "$CONVERSATION_ID" \
+    "$prompt_tokens" \
     "$req_tokens" \
     "$res_tokens" \
     "$turn_tokens" \

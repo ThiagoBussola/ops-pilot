@@ -6,6 +6,7 @@ import type { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 
 import { formatHistoryForPrompt } from "../chat/run-chat.js";
+import { sumPromptTokensFromMessages } from "../context/tokens.js";
 import type {
   ReasoningStrategy,
   StrategyResult,
@@ -66,6 +67,16 @@ const PlanExecuteState = Annotation.Root({
     default: () => 0,
   }),
   llmCalls: Annotation<number>({
+    reducer: (_state, update) => update,
+    default: () => 0,
+  }),
+  /** Running sum of real prompt tokens when usage was observed. */
+  promptTokens: Annotation<number>({
+    reducer: (_state, update) => update,
+    default: () => 0,
+  }),
+  /** How many executor batches contributed usage (0 → omit promptTokens). */
+  promptTokenHits: Annotation<number>({
     reducer: (_state, update) => update,
     default: () => 0,
   }),
@@ -219,6 +230,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
       const stepResult = extractAnswer(result.messages);
       const stepTrace = extractActionObservationTrace(result.messages);
       const aiMessages = result.messages.filter((message) => message instanceof AIMessage).length;
+      const stepPromptTokens = sumPromptTokensFromMessages(result.messages);
 
       return {
         plan: remainingPlan,
@@ -226,6 +238,12 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
         trace: stepTrace,
         iterations: state.iterations + 1,
         llmCalls: state.llmCalls + aiMessages,
+        promptTokens:
+          stepPromptTokens !== undefined
+            ? state.promptTokens + stepPromptTokens
+            : state.promptTokens,
+        promptTokenHits:
+          stepPromptTokens !== undefined ? state.promptTokenHits + 1 : state.promptTokenHits,
       };
     };
 
@@ -376,12 +394,16 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
         trace: [],
         iterations: 0,
         llmCalls: 0,
+        promptTokens: 0,
+        promptTokenHits: 0,
       },
       { recursionLimit: Math.max(10, stepLimit * 5) },
     );
 
     const trace = result.trace.length > 0 ? result.trace : [{ type: "answer" as const, content: "No answer generated." }];
     const answer = result.answer || trace.filter((event) => event.type === "answer").at(-1)?.content || "No answer generated.";
+    const promptTokens =
+      result.promptTokenHits > 0 ? result.promptTokens : undefined;
 
     return {
       answer,
@@ -389,6 +411,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
       metrics: {
         llmCalls: result.llmCalls,
         latencyMs: Date.now() - startedAt,
+        ...(promptTokens !== undefined ? { promptTokens } : {}),
       },
     };
   }

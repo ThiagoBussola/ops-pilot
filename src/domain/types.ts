@@ -2,7 +2,14 @@ export type AlertStatus = "firing" | "resolved";
 export type IncidentStatus = "open" | "resolved";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type ServiceTier = "critical" | "high" | "standard";
-export type TraceEventType = "thought" | "action" | "observation" | "plan" | "critique" | "answer";
+export type TraceEventType =
+  | "thought"
+  | "action"
+  | "observation"
+  | "plan"
+  | "critique"
+  | "answer"
+  | "summarize";
 
 export interface Service {
   name: string;
@@ -52,6 +59,15 @@ export interface TraceEvent {
   timestampMs?: number;
 }
 
+/** Estimated prompt contribution by source (chars/4). Always five keys on /chat. */
+export interface ContextBreakdown {
+  system: number;
+  history: number;
+  memories: number;
+  message: number;
+  summary: number;
+}
+
 export interface ExecutionMetrics {
   llmCalls: number;
   latencyMs: number;
@@ -59,6 +75,10 @@ export interface ExecutionMetrics {
   historyMessages?: number;
   /** Semantic memories injected into this turn (HTTP /chat). */
   recalledMemories?: number;
+  /** Real prompt tokens from LangChain usage (omit when unknown). */
+  promptTokens?: number;
+  /** Estimated tokens by context source (HTTP /chat). */
+  contextBreakdown?: ContextBreakdown;
 }
 
 export interface MemoryFact {
@@ -99,6 +119,13 @@ export interface ConversationMessage {
   createdAt: number;
 }
 
+export interface ConversationSummaryRecord {
+  conversationId: string;
+  text: string;
+  coveredCount: number;
+  updatedAt: number;
+}
+
 export interface ConversationStore {
   create(): string;
   append(
@@ -107,6 +134,18 @@ export interface ConversationStore {
     content: string,
   ): ConversationMessage;
   lastMessages(conversationId: string, limit: number): ConversationMessage[];
+  countMessages(conversationId: string): number;
+  messagesAscending(
+    conversationId: string,
+    offset: number,
+    limit: number,
+  ): ConversationMessage[];
+  getSummary(conversationId: string): ConversationSummaryRecord | null;
+  upsertSummary(
+    conversationId: string,
+    text: string,
+    coveredCount: number,
+  ): void;
 }
 
 /** Input for a single strategy turn (current message + prior history). */

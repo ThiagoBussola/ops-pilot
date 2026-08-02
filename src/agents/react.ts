@@ -4,6 +4,7 @@ import { GraphRecursionError } from "@langchain/langgraph";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import type { ChatOpenAI } from "@langchain/openai";
 
+import { sumPromptTokensFromMessages } from "../context/tokens.js";
 import type { ReasoningStrategy, StrategyResult, StrategyRunInput } from "../domain/types.js";
 import { buildTraceFromMessages } from "../trace/builder.js";
 import { OPSPILOT_SYSTEM_PROMPT } from "./system-prompt.js";
@@ -50,6 +51,7 @@ export class ReactStrategy implements ReasoningStrategy {
       const trace = buildTraceFromMessages(result.messages);
       const answer = trace.filter((item) => item.type === "answer").at(-1)?.content ?? "No answer generated.";
       const llmCalls = result.messages.filter((message) => message instanceof AIMessage).length;
+      const promptTokens = sumPromptTokensFromMessages(result.messages);
 
       return {
         answer,
@@ -57,6 +59,7 @@ export class ReactStrategy implements ReasoningStrategy {
         metrics: {
           llmCalls,
           latencyMs: Date.now() - startedAt,
+          ...(promptTokens !== undefined ? { promptTokens } : {}),
         },
       };
     } catch (error) {

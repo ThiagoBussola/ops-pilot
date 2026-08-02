@@ -10,6 +10,7 @@ import type {
   StrategyRunInput,
 } from "../domain/types.js";
 import type { CritiqueResult } from "../strategies/reflect.js";
+import { createFakeConversationSummarizer } from "../chat/history-summarizer.js";
 import { FakeEmbedder } from "../memory/fake-embedder.js";
 import { SqliteMemoryStore } from "../memory/memory-store.js";
 import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
@@ -492,7 +493,7 @@ test("persistent: invalid conversationId returns 400", async () => {
   });
 });
 
-test("persistent: historyMessages capped at 12", async () => {
+test("persistent: historyMessages capped at 8", async () => {
   const react = fakeStrategy({ name: "react" });
   const conversations = memoryConversations();
   const cid = conversations.create();
@@ -508,8 +509,8 @@ test("persistent: historyMessages capped at 12", async () => {
     });
     assert.equal(status, 200);
     const metrics = json.metrics as { historyMessages: number };
-    assert.equal(metrics.historyMessages, 12);
-    assert.equal(react.inputs[0]?.history.length, 12);
+    assert.equal(metrics.historyMessages, 8);
+    assert.equal(react.inputs[0]?.history.length, 8);
   });
 });
 
@@ -535,5 +536,98 @@ test("persistent: throwing strategy does not append assistant", async () => {
     assert.equal(msgs.length, 1);
     assert.equal(msgs[0]?.role, "user");
     assert.equal(msgs[0]?.content, "fail");
+  });
+});
+
+test("context metrics: contextBreakdown always present; promptTokens optional", async () => {
+  const withTokens = fakeStrategy({
+    name: "react",
+    run: async () => ({
+      answer: "ok",
+      trace: [{ type: "answer", content: "ok" }],
+      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 99 },
+    }),
+  });
+  const appWith = testApp({ registry: createRegistry({ react: withTokens }) });
+
+  await withServer(appWith, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, { message: "oi" });
+    assert.equal(status, 200);
+    const metrics = json.metrics as {
+      promptTokens?: number;
+      contextBreakdown: {
+        system: number;
+        history: number;
+        memories: number;
+        message: number;
+        summary: number;
+      };
+      llmCalls: number;
+      historyMessages: number;
+      recalledMemories: number;
+    };
+    assert.equal(metrics.promptTokens, 99);
+    assert.equal(metrics.llmCalls, 1);
+    assert.equal(metrics.historyMessages, 0);
+    assert.equal(metrics.recalledMemories, 0);
+    assert.deepEqual(Object.keys(metrics.contextBreakdown).sort(), [
+      "history",
+      "memories",
+      "message",
+      "summary",
+      "system",
+    ]);
+    assert.equal(metrics.contextBreakdown.history, 0);
+    assert.equal(metrics.contextBreakdown.memories, 0);
+    assert.equal(metrics.contextBreakdown.summary, 0);
+    assert.ok(metrics.contextBreakdown.system > 0);
+    assert.ok(metrics.contextBreakdown.message >= 0);
+  });
+
+  const withoutTokens = fakeStrategy({ name: "react" });
+  const appWithout = testApp({ registry: createRegistry({ react: withoutTokens }) });
+
+  await withServer(appWithout, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, { message: "oi" });
+    assert.equal(status, 200);
+    const metrics = json.metrics as Record<string, unknown>;
+    assert.equal("promptTokens" in metrics, false);
+    assert.ok(metrics.contextBreakdown && typeof metrics.contextBreakdown === "object");
+  });
+});
+
+test("history summarization: summarize event after 16 seeded messages", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const conversations = memoryConversations();
+  const cid = conversations.create();
+  for (let i = 0; i < 16; i += 1) {
+    conversations.append(cid, i % 2 === 0 ? "user" : "assistant", `m${i}`);
+  }
+  let calls = 0;
+  const summarizer = createFakeConversationSummarizer(() => {
+    calls += 1;
+  });
+  const app = testApp({
+    registry: createRegistry({ react }),
+    conversations,
+    summarizer,
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "continue",
+      conversationId: cid,
+    });
+    assert.equal(status, 200);
+    assert.equal(calls, 1);
+    const trace = json.trace as Array<{ type: string }>;
+    assert.equal(trace[0]?.type, "summarize");
+    const metrics = json.metrics as {
+      historyMessages: number;
+      contextBreakdown: { summary: number };
+    };
+    assert.equal(metrics.historyMessages, 8);
+    assert.ok(metrics.contextBreakdown.summary > 0);
+    assert.match(react.inputs[0]?.message ?? "", /Conversation summary:/);
   });
 });

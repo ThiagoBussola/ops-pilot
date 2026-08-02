@@ -12,6 +12,7 @@ import {
   resolveStrategy,
   type StrategyRegistry,
 } from "../agents/index.js";
+import type { ConversationSummarizer } from "../chat/history-summarizer.js";
 import { runChat } from "../chat/run-chat.js";
 import {
   ChatTimeoutError,
@@ -32,6 +33,7 @@ export interface ChatAppDeps {
   timeoutMs?: number;
   reflectionOpts?: ReflectionOpts;
   learningReflector?: LearningReflectorFn;
+  summarizer?: ConversationSummarizer;
 }
 
 const DEFAULT_TIMEOUT_MS = 180_000;
@@ -111,6 +113,7 @@ export function createApp(deps: ChatAppDeps): Express {
         {
           execute: (promise) => runWithTimeout(promise, timeoutMs),
           learningReflector: deps.learningReflector,
+          summarizer: deps.summarizer,
         },
       );
 

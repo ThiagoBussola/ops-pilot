@@ -1,6 +1,7 @@
 import type { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 
+import { addPromptTokens } from "../context/tokens.js";
 import type {
   ReasoningStrategy,
   StrategyResult,
@@ -91,6 +92,18 @@ function critiqueEventContent(feedback: string): string {
   return feedback.trim() === "" ? "[Crítico aprovou sem feedback]" : feedback;
 }
 
+function metricsWithOptionalPromptTokens(
+  llmCalls: number,
+  latencyMs: number,
+  promptTokens: number | undefined,
+): StrategyResult["metrics"] {
+  return {
+    llmCalls,
+    latencyMs,
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+  };
+}
+
 export function withReflection(
   strategy: ReasoningStrategy,
   opts: ReflectionOpts = {},
@@ -105,20 +118,26 @@ export function withReflection(
       const startedAt = Date.now();
       let totalLlmCalls = 0;
       let criticCallCount = 0;
+      let totalPromptTokens: number | undefined;
       const accumulatedTrace: TraceEvent[] = [];
 
       let currentResult = await strategy.run(input);
       totalLlmCalls += currentResult.metrics.llmCalls;
+      totalPromptTokens = addPromptTokens(
+        totalPromptTokens,
+        currentResult.metrics.promptTokens,
+      );
       accumulatedTrace.push(...currentResult.trace);
 
       if (effectiveMax === 0 || !criticFn) {
         return {
           answer: currentResult.answer,
           trace: accumulatedTrace,
-          metrics: {
-            llmCalls: totalLlmCalls,
-            latencyMs: Date.now() - startedAt,
-          },
+          metrics: metricsWithOptionalPromptTokens(
+            totalLlmCalls,
+            Date.now() - startedAt,
+            totalPromptTokens,
+          ),
         };
       }
 
@@ -129,6 +148,7 @@ export function withReflection(
           input.message,
         );
         criticCallCount += 1;
+        // Critic via withStructuredOutput typically has no AIMessage usage — best-effort omit.
 
         accumulatedTrace.push({
           type: "critique",
@@ -148,16 +168,21 @@ export function withReflection(
         };
         currentResult = await strategy.run(enrichedInput);
         totalLlmCalls += currentResult.metrics.llmCalls;
+        totalPromptTokens = addPromptTokens(
+          totalPromptTokens,
+          currentResult.metrics.promptTokens,
+        );
         accumulatedTrace.push(...currentResult.trace);
       }
 
       return {
         answer: currentResult.answer,
         trace: accumulatedTrace,
-        metrics: {
-          llmCalls: totalLlmCalls + criticCallCount,
-          latencyMs: Date.now() - startedAt,
-        },
+        metrics: metricsWithOptionalPromptTokens(
+          totalLlmCalls + criticCallCount,
+          Date.now() - startedAt,
+          totalPromptTokens,
+        ),
       };
     },
   };

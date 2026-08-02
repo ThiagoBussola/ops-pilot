@@ -233,6 +233,37 @@ test("US2: latencyMs is wall-clock of full run()", async () => {
   assert.ok(result.metrics.latencyMs >= 35);
 });
 
+test("US2: withReflection sums promptTokens across base runs; omits when none", async () => {
+  const withTokens = mockBase({
+    run: async () => ({
+      answer: "a",
+      trace: [{ type: "answer", content: "a" }],
+      metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 10 },
+    }),
+  });
+  const rejectThenApprove = sequenceCritic([
+    { approved: false, feedback: "fix" },
+    { approved: true, feedback: "ok" },
+  ]);
+  const summed = await withReflection(withTokens, { critic: rejectThenApprove }).run({
+    message: "q",
+    history: [],
+  });
+  assert.equal(summed.metrics.promptTokens, 20);
+
+  const without = mockBase({
+    run: async () => ({
+      answer: "a",
+      trace: [{ type: "answer", content: "a" }],
+      metrics: { llmCalls: 1, latencyMs: 1 },
+    }),
+  });
+  const omitted = await withReflection(without, {
+    critic: async () => ({ approved: true, feedback: "ok" }),
+  }).run({ message: "q", history: [] });
+  assert.equal(omitted.metrics.promptTokens, undefined);
+});
+
 // --- US3 ---
 
 test("US3: withReflection(ReactStrategy) name is reflect:react", () => {
