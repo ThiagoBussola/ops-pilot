@@ -1,28 +1,17 @@
 # Deploy OpsPilot War Room (web/) to GitHub Pages
 #
-# CI build one-liner (same as local smoke):
-#   npm --prefix web run build -- --base=/ops-pilot/
-#
 # Prerequisites: Settings → Pages → Source = GitHub Actions
 
-name: Pages
+name: Deploy
 
 on:
   push:
-    branches: [master]
-    paths:
-      - "web/**"
-      - ".github/workflows/pages.yml"
-  workflow_dispatch:
+    branches: [main]
 
 permissions:
   contents: read
   pages: write
   id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   build:
@@ -39,13 +28,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Install
-        run: npm ci --prefix web
+        working-directory: web
+        run: npm ci
 
       - name: Build
-        run: npm --prefix web run build -- --base=/ops-pilot/
-
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+        working-directory: web
+        run: npm run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
