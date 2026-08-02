@@ -582,6 +582,10 @@ test("context metrics: contextBreakdown always present; promptTokens optional", 
     assert.equal(metrics.contextBreakdown.summary, 0);
     assert.ok(metrics.contextBreakdown.system > 0);
     assert.ok(metrics.contextBreakdown.message >= 0);
+    // Defaults CONTEXT_BUDGET_*: optional sections never exceed ceilings
+    assert.ok(metrics.contextBreakdown.summary <= 200);
+    assert.ok(metrics.contextBreakdown.history <= 1200);
+    assert.ok(metrics.contextBreakdown.memories <= 300);
   });
 
   const withoutTokens = fakeStrategy({ name: "react" });

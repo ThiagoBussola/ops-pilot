@@ -6,7 +6,6 @@ import type {
   ExecutionMetrics,
   MemoryStore,
   ReasoningStrategy,
-  RecalledMemory,
   StrategyResult,
   TraceEvent,
 } from "../domain/types.js";
@@ -15,15 +14,22 @@ import {
   scheduleLearning,
   type LearningReflectorFn,
 } from "../memory/learning-reflector.js";
+import {
+  buildContext,
+  formatHistoryText,
+  formatMemoriesForPrompt,
+  formatMemoriesText,
+  type SectionBudgets,
+} from "../context/context-builder.js";
 import { buildContextBreakdown } from "../context/tokens.js";
 import {
-  formatSummaryForPrompt,
   HISTORY_LIMIT,
   maybeSummarize,
   type ConversationSummarizer,
 } from "./history-summarizer.js";
 
 export { HISTORY_LIMIT };
+export { formatMemoriesForPrompt, formatHistoryText, formatMemoriesText };
 
 export interface ChatInput {
   message: string;
@@ -49,39 +55,13 @@ export interface RunChatOptions {
   learningReflector?: LearningReflectorFn;
   /** Optional history summarizer (batch prune). Absent → window only, no summarize. */
   summarizer?: ConversationSummarizer;
-}
-
-/** Inject recalled facts into the user message (strategies stay unchanged). */
-export function formatMemoriesForPrompt(
-  recalled: RecalledMemory[],
-  currentMessage: string,
-): string {
-  if (recalled.length === 0) {
-    return currentMessage;
-  }
-  const lines = recalled.map((m) => `- ${m.fact}`);
-  return `Relevant memories:\n${lines.join("\n")}\n\nCurrent message:\n${currentMessage}`;
-}
-
-/** History text for token estimate (no current message). */
-export function formatHistoryText(history: ConversationMessage[]): string {
-  if (history.length === 0) {
-    return "";
-  }
-  return history.map((m) => `${m.role}: ${m.content}`).join("\n");
-}
-
-/** Recalled facts text for token estimate (no envelope). */
-export function formatMemoriesText(recalled: RecalledMemory[]): string {
-  if (recalled.length === 0) {
-    return "";
-  }
-  return recalled.map((m) => `- ${m.fact}`).join("\n");
+  /** Optional per-section token budgets (tests / overrides). */
+  budgets?: Partial<SectionBudgets>;
 }
 
 /**
  * Persist turn + run strategy with history, optional summary prune, and semantic memory.
- * Flow: create/load → maybeSummarize → lastMessages(8) → recall → enrich → append user
+ * Flow: create/load → maybeSummarize → lastMessages(8) → recall → buildContext → append user
  * → run → append assistant → scheduleLearning.
  */
 export async function runChat(
@@ -110,13 +90,24 @@ export async function runChat(
   const summaryText = summaryRecord?.text ?? null;
   const recalled = await memories.recall(input.userId, input.message);
 
-  let enrichedMessage = formatMemoriesForPrompt(recalled, input.message);
-  enrichedMessage = formatSummaryForPrompt(summaryText, enrichedMessage);
+  const built = buildContext(
+    {
+      system: OPSPILOT_SYSTEM_PROMPT,
+      summary: summaryText,
+      history,
+      memories: recalled,
+      message: input.message,
+    },
+    { budgets: options.budgets },
+  );
 
   conversations.append(conversationId, "user", input.message);
 
   const result = await runWithChatUser(input.userId, async () => {
-    const runPromise = strategy.run({ message: enrichedMessage, history });
+    const runPromise = strategy.run({
+      message: built.enrichedMessage,
+      history: built.history,
+    });
     return options.execute?.(runPromise) ?? runPromise;
   });
 
@@ -134,17 +125,17 @@ export async function runChat(
   }
 
   const contextBreakdown = buildContextBreakdown({
-    system: OPSPILOT_SYSTEM_PROMPT,
-    history: formatHistoryText(history),
-    memories: formatMemoriesText(recalled),
-    message: input.message,
-    summary: summaryText ?? "",
+    system: built.system,
+    history: built.historyText,
+    memories: built.memoriesText,
+    message: built.message,
+    summary: built.summaryText,
   });
 
   const metrics: ChatTurnResult["metrics"] = {
     ...result.metrics,
-    historyMessages: history.length,
-    recalledMemories: recalled.length,
+    historyMessages: built.historyMessages,
+    recalledMemories: built.recalledMemories,
     contextBreakdown,
   };
   if (result.metrics.promptTokens === undefined) {

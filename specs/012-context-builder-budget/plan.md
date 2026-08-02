@@ -1,113 +1,94 @@
-# Implementation Plan: [FEATURE]
+# Implementation Plan: ContextBuilder com Orçamento por Seção
 
-**Branch**: `[###-feature-name]` | **Date**: [DATE] | **Spec**: [link]
+**Branch**: `012-context-builder-budget` | **Date**: 2026-08-02 | **Spec**: [spec.md](./spec.md)
 
-**Input**: Feature specification from `/specs/[###-feature-name]/spec.md`
-
-**Note**: This template is filled in by the `/speckit.plan` command. See `.specify/templates/plan-template.md` for the execution workflow.
+**Input**: Feature specification from `specs/012-context-builder-budget/spec.md`
 
 ## Summary
 
-[Extract from feature spec: primary requirement + technical approach from research]
+Introduzir `src/context/context-builder.ts` como **ponto único** que monta as seções do prompt (system, resumo, janela, memórias, mensagem) para **todas** as estratégias via `runChat`, aplicando tetos por seção (`CONTEXT_BUDGET_*`, defaults 200 / 1200 / 300). System e mensagem atual são intocáveis; janela corta as mais antigas; memórias cortam menor score; resumo trunca texto. Métricas (`contextBreakdown`, `historyMessages`, `recalledMemories`) refletem o **pós-corte**. Testes com tetos baixos validam a ordem.
 
 ## Technical Context
 
-<!--
-  ACTION REQUIRED: Replace the content in this section with the technical details
-  for the project. The structure here is presented in advisory capacity to guide
-  the iteration process.
--->
+**Language/Version**: Node.js 22 LTS, TypeScript ESM `strict: true`
 
-**Language/Version**: [e.g., Python 3.11, Swift 5.9, Rust 1.75 or NEEDS CLARIFICATION]
+**Primary Dependencies**: zod (parse de env na borda do builder); `estimateTokens` de `src/context/tokens.ts`; sem novas deps externas
 
-**Primary Dependencies**: [e.g., FastAPI, UIKit, LLVM or NEEDS CLARIFICATION]
+**Storage**: N/A (só composição em memória; lê dados já carregados por `runChat` / 008 / 011)
 
-**Storage**: [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
+**Testing**: `node:test` via `tsx`; fixtures determinísticas; tetos injetáveis (opts > env); sem rede LLM
 
-**Testing**: [e.g., pytest, XCTest, cargo test or NEEDS CLARIFICATION]
+**Target Platform**: Node.js processo local (HTTP `/chat` + strategies)
 
-**Target Platform**: [e.g., Linux server, iOS 15+, WASM or NEEDS CLARIFICATION]
+**Project Type**: Web service + agente; fatia `context/` + wire em `run-chat`
 
-**Project Type**: [e.g., library/cli/web-service/mobile-app/compiler/desktop-app or NEEDS CLARIFICATION]
+**Performance Goals**: Composição O(n) na janela (≤8) e memórias (≤3 recall); negligível vs LLM
 
-**Performance Goals**: [domain-specific, e.g., 1000 req/s, 10k lines/sec, 60 fps or NEEDS CLARIFICATION]
+**Constraints**: Não alterar system/mensagem; coexistir com HISTORY_LIMIT=8 e recall top-K; métricas pós-orçamento; strategies continuam recebendo `StrategyRunInput` (conteúdo já orçado)
 
-**Constraints**: [domain-specific, e.g., <200ms p95, <100MB memory, offline-capable or NEEDS CLARIFICATION]
-
-**Scale/Scope**: [domain-specific, e.g., 10k users, 1M LOC, 50 screens or NEEDS CLARIFICATION]
+**Scale/Scope**: Novo módulo + testes + refator de enrich em `runChat`; ~8–12 arquivos
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-[Gates determined based on constitution file]
+| # | Princípio | Status | Evidência |
+|---|-----------|--------|-----------|
+| 1 | **Agente no centro** | ✅ PASS | Builder alimenta o prompt do agente; não substitui tools/grafo |
+| 2 | **Camadas explícitas** | ✅ PASS | `context/` puro; `run-chat` orquestra; strategies consomem resultado |
+| 3 | **Validação na fronteira** | ✅ PASS | Env `CONTEXT_BUDGET_*` parseada com fallback (zod/number) |
+| 4 | **Erros são de domínio** | ✅ PASS | Config inválida → defaults; sem quebrar turno |
+| 5 | **Teste é parte da tarefa** | ✅ PASS | FR-009 / SC-001 ordem de corte |
+| 6 | **Segurança por padrão** | ✅ PASS | Sem segredos; env via `--env-file` |
+| 7 | **Spec antes de código** | ✅ PASS | — |
+| 8 | **Pequeno e reversível** | ✅ PASS | Camada aditiva; enrich atual migra para o builder |
+
+**Stack**: ✅ Sem ORM novo; reusa tokens/estimateTokens.
+
+**Gate result: ALL PASS** — Complexity Tracking não necessário.
+
+**Re-check pós Phase 1**: contratos mantêm builder puro, env canônicas, métricas pós-corte, strategies via `runChat`. Gate permanece PASS.
 
 ## Project Structure
 
 ### Documentation (this feature)
 
 ```text
-specs/[###-feature]/
-├── plan.md              # This file (/speckit.plan command output)
-├── research.md          # Phase 0 output (/speckit.plan command)
-├── data-model.md        # Phase 1 output (/speckit.plan command)
-├── quickstart.md        # Phase 1 output (/speckit.plan command)
-├── contracts/           # Phase 1 output (/speckit.plan command)
-└── tasks.md             # Phase 2 output (/speckit.tasks command - NOT created by /speckit.plan)
+specs/012-context-builder-budget/
+├── plan.md
+├── research.md
+├── data-model.md
+├── quickstart.md
+├── contracts/
+│   ├── context-builder.md
+│   └── chat-http.md
+└── tasks.md                # /speckit.tasks — NÃO gerado aqui
 ```
 
 ### Source Code (repository root)
-<!--
-  ACTION REQUIRED: Replace the placeholder tree below with the concrete layout
-  for this feature. Delete unused options and expand the chosen structure with
-  real paths (e.g., apps/admin, packages/something). The delivered plan must
-  not include Option labels.
--->
 
 ```text
-# [REMOVE IF UNUSED] Option 1: Single project (DEFAULT)
 src/
-├── models/
-├── services/
-├── cli/
-└── lib/
-
-tests/
-├── contract/
-├── integration/
-└── unit/
-
-# [REMOVE IF UNUSED] Option 2: Web application (when "frontend" + "backend" detected)
-backend/
-├── src/
-│   ├── models/
-│   ├── services/
-│   └── api/
-└── tests/
-
-frontend/
-├── src/
-│   ├── components/
-│   ├── pages/
-│   └── services/
-└── tests/
-
-# [REMOVE IF UNUSED] Option 3: Mobile + API (when "iOS/Android" detected)
-api/
-└── [same as backend above]
-
-ios/ or android/
-└── [platform-specific structure: feature modules, UI flows, platform tests]
+├── context/
+│   ├── tokens.ts                    # (existente) estimateTokens / buildContextBreakdown
+│   ├── context-builder.ts           # NOVO: budgets + cortes + assemble
+│   └── context-builder.test.ts      # NOVO: tetos baixos / ordem / intocáveis
+├── chat/
+│   ├── run-chat.ts                  # ← usa buildContext; métricas pós-corte
+│   ├── history-summarizer.ts        # formatSummaryForPrompt pode ser reexportado/usado pelo builder
+│   └── compose-prompt.test.ts       # ← asserts pós-orçamento
+├── agents/
+│   ├── react.ts                     # inalterado no contrato StrategyRunInput (recebe já orçado)
+│   └── system-prompt.ts             # OPSPILOT_SYSTEM_PROMPT (intocável)
+├── strategies/
+│   ├── plan-execute.ts              # idem — history/message já orçados
+│   └── reflect.ts                   # idem
+└── domain/
+    └── types.ts                     # opcional: tipos ContextBuildInput/Result se exportados do domínio
 ```
 
-**Structure Decision**: [Document the selected structure and reference the real
-directories captured above]
+**Structure Decision**: Lógica de orçamento em `src/context/context-builder.ts` (puro, testável). `runChat` deixa de montar envelopes ad hoc e chama o builder após `lastMessages` + `getSummary` + `recall`. Strategies **não** leem env de budget — só consomem `StrategyRunInput` já cortado (FR-002 satisfeito no caminho `/chat`).
 
 ## Complexity Tracking
 
-> **Fill ONLY if Constitution Check has violations that must be justified**
-
-| Violation | Why Needed | Simpler Alternative Rejected Because |
-|-----------|------------|-------------------------------------|
-| [e.g., 4th project] | [current need] | [why 3 projects insufficient] |
-| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |
+> Nenhuma violação — seção vazia de propósito.

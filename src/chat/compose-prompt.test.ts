@@ -196,6 +196,75 @@ test("runChat: contextBreakdown always has five keys; empty hist/mem/summary →
   assert.ok(bd.system > 0);
 });
 
+test("runChat: strategy receives builder enrichedMessage (summary envelope)", async () => {
+  const conversations = new SqliteConversationStore(":memory:");
+  const memories = new SqliteMemoryStore(":memory:", new FakeEmbedder());
+  const cid = conversations.create();
+  conversations.upsertSummary(cid, "fato importante", 0);
+
+  const seen: StrategyRunInput[] = [];
+  const strategy: ReasoningStrategy = {
+    name: "fake",
+    async run(input: StrategyRunInput): Promise<StrategyResult> {
+      seen.push(input);
+      return {
+        answer: "ok",
+        trace: [{ type: "answer", content: "ok" }],
+        metrics: { llmCalls: 1, latencyMs: 1 },
+      };
+    },
+  };
+
+  await runChat(conversations, memories, strategy, {
+    message: "status?",
+    userId: "u-builder",
+    conversationId: cid,
+  });
+
+  assert.match(seen[0]?.message ?? "", /Conversation summary:/);
+  assert.match(seen[0]?.message ?? "", /fato importante/);
+  assert.match(seen[0]?.message ?? "", /status\?/);
+});
+
+test("runChat: low budgets → post-cut metrics (historyMessages / breakdown)", async () => {
+  const conversations = new SqliteConversationStore(":memory:");
+  const memories = new SqliteMemoryStore(":memory:", new FakeEmbedder());
+  const cid = conversations.create();
+  for (let i = 0; i < 6; i += 1) {
+    conversations.append(
+      cid,
+      i % 2 === 0 ? "user" : "assistant",
+      `pad-${i}-${"x".repeat(40)}`,
+    );
+  }
+  conversations.upsertSummary(cid, "S".repeat(80), 0);
+
+  const strategy: ReasoningStrategy = {
+    name: "fake",
+    async run(): Promise<StrategyResult> {
+      return {
+        answer: "ok",
+        trace: [{ type: "answer", content: "ok" }],
+        metrics: { llmCalls: 1, latencyMs: 1 },
+      };
+    },
+  };
+
+  const result = await runChat(
+    conversations,
+    memories,
+    strategy,
+    { message: "agora", userId: "u1", conversationId: cid },
+    { budgets: { summary: 3, history: 20, memories: 0 } },
+  );
+
+  assert.ok(result.metrics.historyMessages < 6);
+  assert.ok(result.metrics.contextBreakdown.summary <= 3);
+  assert.ok(result.metrics.contextBreakdown.history <= 20);
+  assert.equal(result.metrics.contextBreakdown.memories, 0);
+  assert.equal(result.metrics.recalledMemories, 0);
+});
+
 test("runChat: summarizer triggers at 16 msgs; injects summary; no recompute next turn", async () => {
   const conversations = new SqliteConversationStore(":memory:");
   const memories = new SqliteMemoryStore(":memory:", new FakeEmbedder());
