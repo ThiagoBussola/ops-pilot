@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { createModel } from "./llm/factory.js";
 import { InMemoryStore } from "./store/in-memory-store.js";
-import { seedStore } from "./store/seed.js";
+import { seedOpsStore } from "./store/seed.js";
 import { PlanExecuteStrategy } from "./strategies/plan-execute.js";
 import { ReactStrategy } from "./strategies/react.js";
 import { withReflection } from "./strategies/reflect.js";
@@ -106,7 +106,7 @@ function printResult(name: string, result: Awaited<ReturnType<ReasoningStrategy[
 
 export function createStrategy(name: StrategyName, maxIterations: number): ReasoningStrategy {
   const store = new InMemoryStore();
-  seedStore(store);
+  seedOpsStore(store);
   const tools = createTools(store);
 
   if (name === "react") {

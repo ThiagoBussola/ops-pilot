@@ -82,7 +82,7 @@ function buildExecutorUserMessage(
 ): string {
   const sections = [
     `Pedido original (contexto — cumpra as restrições literais):\n${originalInput}`,
-    "Regras: preserve nomes de serviço exatamente como no pedido; sev1=critical, sev2=high, sev3=medium, sev4=low.",
+    "Regras: preserve nomes de serviço exatamente como no pedido; severity canônica do banco = critical|high|medium|low (sev1→critical, sev2→high, sev3→medium, sev4→low).",
   ];
   if (done.length > 0) {
     sections.push(`Progresso anterior (use IDs/dados já obtidos):\n${doneAsText(done)}`);
@@ -164,9 +164,9 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
             [
               "Você é o planner operacional do OpsPilot.",
               `Produza no máximo ${stepLimit} passos curtos, ordenados e executáveis com as tools disponíveis.`,
-              "Não invente ferramentas fora de list_alerts, open_incident, resolve_incident.",
+              "Não invente ferramentas fora de list_alerts, open_incident, resolve_incident, list_incidents, consultar_runbook.",
               "Preserve literais do pedido (nomes de serviço, IDs, ordem).",
-              "Se o pedido falar sev2/sev1/etc, nos passos deixe explícito severity=high/critical/... (sev1=critical, sev2=high, sev3=medium, sev4=low).",
+              "Se o pedido falar sev1/sev2/etc, nos passos use severity canônica do banco: critical|high|medium|low (sev1→critical, sev2→high, sev3→medium, sev4→low).",
               "Passos que dependem de dados anteriores devem dizer para reutilizar IDs/resultados do progresso.",
             ].join(" "),
           ],

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { createModel } from "./llm/factory.js";
 import { InMemoryStore } from "./store/in-memory-store.js";
-import { seedStore } from "./store/seed.js";
+import { seedOpsStore } from "./store/seed.js";
 import { PlanExecuteStrategy } from "./strategies/plan-execute.js";
 import { ReactStrategy } from "./strategies/react.js";
 import { createTools } from "./tools/index.js";
@@ -14,8 +14,11 @@ type StrategyId = "react" | "plan-and-execute";
 
 interface BenchArgs {
   scenarios: ScenarioId[];
+  strategies: StrategyId[];
   noReplanner: boolean;
   maxIterations: number;
+  /** Soft cap on total llmCalls across the bench run; skip remaining cells when reached. */
+  maxLlmCalls: number | null;
 }
 
 interface ScenarioDef {
@@ -214,6 +217,26 @@ function parseArgs(argv: string[]): BenchArgs {
     scenarios = [rawScenario as ScenarioId];
   }
 
+  const rawStrategies = String(args["--strategies"] ?? "").trim();
+  let strategies = ALL_STRATEGIES;
+  if (rawStrategies) {
+    const parsed = rawStrategies
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (parsed.length === 0) {
+      throw new Error(`Invalid --strategies. Use: ${ALL_STRATEGIES.join(", ")}`);
+    }
+    for (const name of parsed) {
+      if (!ALL_STRATEGIES.includes(name as StrategyId)) {
+        throw new Error(
+          `Unknown strategy "${name}". Use: ${ALL_STRATEGIES.join(", ")}`,
+        );
+      }
+    }
+    strategies = parsed as StrategyId[];
+  }
+
   const maxIterations = args["--max-iterations"]
     ? Number(args["--max-iterations"])
     : 10;
@@ -221,10 +244,20 @@ function parseArgs(argv: string[]): BenchArgs {
     throw new Error("--max-iterations must be a positive integer");
   }
 
+  let maxLlmCalls: number | null = null;
+  if (args["--max-llm-calls"] !== undefined && args["--max-llm-calls"] !== "") {
+    maxLlmCalls = Number(args["--max-llm-calls"]);
+    if (!Number.isInteger(maxLlmCalls) || maxLlmCalls <= 0) {
+      throw new Error("--max-llm-calls must be a positive integer");
+    }
+  }
+
   return {
     scenarios,
+    strategies,
     noReplanner: args["--no-replanner"] === true,
     maxIterations,
+    maxLlmCalls,
   };
 }
 
@@ -288,7 +321,7 @@ async function runCell(
   args: BenchArgs,
 ): Promise<BenchRow> {
   const store = new InMemoryStore();
-  seedStore(store);
+  seedOpsStore(store);
   const strategy = createStrategy(
     strategyName,
     store,
@@ -334,24 +367,79 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const args = parseArgs(argv);
   const selected = SCENARIOS.filter((scenario) => args.scenarios.includes(scenario.id));
   const rows: BenchRow[] = [];
+  let totalLlmCalls = 0;
+
+  const flags = [
+    args.noReplanner ? "--no-replanner" : null,
+    args.maxLlmCalls != null ? `--max-llm-calls ${args.maxLlmCalls}` : null,
+    `--max-iterations ${args.maxIterations}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   console.log(
-    `Bench: ${selected.map((s) => s.id).join(", ")} × ${ALL_STRATEGIES.join(", ")}` +
-      (args.noReplanner ? " [--no-replanner]" : ""),
+    `Bench: ${selected.map((s) => s.id).join(", ")} × ${args.strategies.join(", ")}` +
+      (flags ? ` [${flags}]` : ""),
+  );
+  console.log(
+    `Modelo: ${process.env.OPENROUTER_MODEL ?? "(default createModel)"} | dica aula: --scenario C1 --strategies react`,
   );
   console.log();
 
-  for (const scenario of selected) {
-    for (const strategyName of ALL_STRATEGIES) {
+  outer: for (const scenario of selected) {
+    for (const strategyName of args.strategies) {
+      if (args.maxLlmCalls != null && totalLlmCalls >= args.maxLlmCalls) {
+        console.log(
+          `Budget atingido (${totalLlmCalls}/${args.maxLlmCalls} llmCalls) — pulando o restante.`,
+        );
+        rows.push({
+          cenario: scenario.id,
+          estrategia: strategyLabel(strategyName, args.noReplanner),
+          acerto: false,
+          llmCalls: 0,
+          latencyMs: 0,
+          error: `skipped: budget --max-llm-calls ${args.maxLlmCalls}`,
+        });
+        // Mark any further cells in remaining nested loops.
+        const remainingAfter = [];
+        let past = false;
+        for (const s of selected) {
+          for (const st of args.strategies) {
+            if (!past) {
+              if (s.id === scenario.id && st === strategyName) {
+                past = true;
+              }
+              continue;
+            }
+            remainingAfter.push({ s, st });
+          }
+        }
+        for (const next of remainingAfter) {
+          rows.push({
+            cenario: next.s.id,
+            estrategia: strategyLabel(next.st, args.noReplanner),
+            acerto: false,
+            llmCalls: 0,
+            latencyMs: 0,
+            error: `skipped: budget --max-llm-calls ${args.maxLlmCalls}`,
+          });
+          console.log(
+            `Skipping ${next.s.id} / ${next.st}... skipped: budget`,
+          );
+        }
+        break outer;
+      }
+
       process.stdout.write(`Running ${scenario.id} / ${strategyName}... `);
       const row = await runCell(scenario, strategyName, args);
       rows.push(row);
+      totalLlmCalls += row.llmCalls;
       if (row.acerto) {
-        console.log("ok");
+        console.log(`ok (llmCalls=${row.llmCalls}, total=${totalLlmCalls})`);
       } else if (row.error) {
         console.log(`ERROR: ${row.error}`);
       } else {
-        console.log("miss");
+        console.log(`miss (llmCalls=${row.llmCalls}, total=${totalLlmCalls})`);
         for (const reason of row.reasons ?? []) {
           console.log(`  - ${reason}`);
         }
@@ -367,6 +455,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   console.log();
   printTable(rows);
+  console.log(`Total llmCalls nesta execução: ${totalLlmCalls}`);
 
   const misses = rows.filter((row) => !row.acerto).length;
   if (misses > 0) {

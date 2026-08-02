@@ -1,25 +1,54 @@
-import { IncidentNotFoundError } from "../domain/errors.js";
-import type { Alert, AlertStatus, IStore, Incident, Service } from "../domain/types.js";
+import { IncidentNotFoundError, RunbookNotFoundError } from "../domain/errors.js";
+import type {
+  Alert,
+  AlertStatus,
+  Incident,
+  IncidentStatus,
+  OpsStore,
+  Runbook,
+  SeedPayload,
+  Service,
+} from "../domain/types.js";
 
-interface SeedPayload {
-  services: Service[];
-  alerts: Alert[];
-}
-
-export class InMemoryStore implements IStore {
+export class InMemoryStore implements OpsStore {
   private services: Service[] = [];
   private alerts: Alert[] = [];
   private incidents: Incident[] = [];
+  private runbooks = new Map<string, Runbook>();
 
   seed(data: SeedPayload): void {
-    this.services = data.services.map((service) => ({ ...service }));
-    this.alerts = data.alerts.map((alert) => ({ ...alert }));
-    this.incidents = [];
+    for (const service of data.services) {
+      if (!this.services.some((item) => item.name === service.name)) {
+        this.services.push({ ...service });
+      }
+    }
+
+    for (const alert of data.alerts) {
+      if (!this.alerts.some((item) => item.id === alert.id)) {
+        this.alerts.push({ ...alert });
+      }
+    }
+
+    for (const runbook of data.runbooks) {
+      if (!this.runbooks.has(runbook.service)) {
+        this.runbooks.set(runbook.service, { ...runbook });
+      }
+    }
   }
 
   getAlerts(status?: AlertStatus): Alert[] {
     const source = status ? this.alerts.filter((alert) => alert.status === status) : this.alerts;
     return source.map((alert) => ({ ...alert }));
+  }
+
+  getIncidents(status?: IncidentStatus): Incident[] {
+    const source = status
+      ? this.incidents.filter((incident) => incident.status === status)
+      : this.incidents;
+    return source
+      .slice()
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((incident) => ({ ...incident }));
   }
 
   createIncident(data: Pick<Incident, "title" | "service" | "severity">): Incident {
@@ -31,13 +60,14 @@ export class InMemoryStore implements IStore {
       status: "open",
       createdAt: Date.now(),
       resolvedAt: null,
+      summary: null,
     };
 
     this.incidents.push(incident);
     return { ...incident };
   }
 
-  resolveIncident(id: string): Incident {
+  resolveIncident(id: string, summary?: string | null): Incident {
     const incident = this.incidents.find((item) => item.id === id);
     if (!incident) {
       throw new IncidentNotFoundError(id);
@@ -45,11 +75,16 @@ export class InMemoryStore implements IStore {
 
     incident.status = "resolved";
     incident.resolvedAt = Date.now();
+    incident.summary = summary ?? null;
     return { ...incident };
   }
 
-  getIncidents(): Incident[] {
-    return this.incidents.map((incident) => ({ ...incident }));
+  getRunbook(service: string): Runbook {
+    const runbook = this.runbooks.get(service);
+    if (!runbook) {
+      throw new RunbookNotFoundError(service);
+    }
+    return { ...runbook };
   }
 
   private generateIncidentId(): string {

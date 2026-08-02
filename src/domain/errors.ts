@@ -4,3 +4,30 @@ export class IncidentNotFoundError extends Error {
     this.name = "IncidentNotFoundError";
   }
 }
+
+export class RunbookNotFoundError extends Error {
+  constructor(service: string) {
+    super(`Runbook not found: ${service}`);
+    this.name = "RunbookNotFoundError";
+  }
+}
+
+export class UnknownStrategyError extends Error {
+  readonly strategy: string;
+
+  constructor(strategy: string) {
+    super(`Unknown strategy: ${strategy}`);
+    this.name = "UnknownStrategyError";
+    this.strategy = strategy;
+  }
+}
+
+export class ChatTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Chat timed out after ${timeoutMs}ms`);
+    this.name = "ChatTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}

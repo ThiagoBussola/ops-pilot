@@ -1,1 +1,8 @@
-export { createTools } from "../agents/tools.js";
+export {
+  createTools,
+  createListAlertsTool,
+  createOpenIncidentTool,
+  createResolveIncidentTool,
+  createListIncidentsTool,
+  createConsultarRunbookTool,
+} from "../agents/tools.js";

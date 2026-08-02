@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "arena": "node --env-file-if-exists=.env --import tsx src/arena.ts",
     "bench": "node --env-file-if-exists=.env --import tsx src/bench.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
@@ -14,8 +14,6 @@
     "@langchain/langgraph": "^0.2.0",
     "@langchain/openai": "^0.3.0",
     "express": "^4.19.0",
-    "mysql2": "^3.11.0",
-    "sequelize": "^6.37.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

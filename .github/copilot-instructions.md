@@ -12,7 +12,7 @@ O núcleo é um agente LangChain/LangGraph servido sobre OpenRouter.
 | Agente IA | LangChain + LangGraph → OpenRouter |
 | Validação | `zod` em toda fronteira (HTTP, CLI, saída do agente) |
 | API | Express |
-| Banco | MySQL via Sequelize |
+| Banco | SQLite via `node:sqlite` (`DatabaseSync`); `OPSPILOT_DB` (default `./data/opspilot.db`); `:memory:` em testes |
 | Testes | `node:test` nativo executado com `tsx` |
 
 ## Comandos
@@ -53,5 +53,5 @@ Specs são artefatos de primeira classe — criadas, revisadas e versionadas jun
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at `specs/002-reflection-layer/plan.md`.
+at `specs/004-sqlite-ops-store/plan.md`.
 <!-- SPECKIT END -->
