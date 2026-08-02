@@ -1,4 +1,4 @@
-import type { ChatOpenAI } from "@langchain/openai";
+import type { OpsChatModel } from "../agents/model.js";
 
 import { estimateTokens } from "../context/tokens.js";
 import type {
@@ -52,7 +52,7 @@ export function createFakeConversationSummarizer(
 }
 
 export function createLLMConversationSummarizer(
-  modelFactory: () => ChatOpenAI,
+  modelFactory: () => OpsChatModel,
 ): ConversationSummarizer {
   return async ({ previousSummary, batch }) => {
     const batchText = batch.map((m) => `${m.role}: ${m.content}`).join("\n");
@@ -135,7 +135,7 @@ export async function maybeSummarize(args: {
 
     return {
       summaryText: stored,
-      event: { type: "summarize", content: stored },
+      event: { type: "summarize", content: stored, node: "contexto" },
     };
   } catch {
     return null;

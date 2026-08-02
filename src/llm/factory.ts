@@ -1,1 +1,9 @@
-export { createModel } from "../agents/model.js";
+export {
+  createModel,
+  baseModel,
+  composeResilientRunnable,
+  normalizeFallback,
+  OpsResilientChatModel,
+  MODEL_RETRY_ATTEMPTS,
+  type OpsChatModel,
+} from "../agents/model.js";

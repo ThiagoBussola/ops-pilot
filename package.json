@@ -8,7 +8,11 @@
     "bench": "node --env-file-if-exists=.env --import tsx src/bench.ts",
     "mcp": "node --env-file-if-exists=.env --import tsx src/mcp/server.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "web:test": "npm --prefix web run test",
+    "web:typecheck": "npm --prefix web run typecheck"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

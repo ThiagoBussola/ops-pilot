@@ -126,7 +126,7 @@ test("runChat does not await deferred remember (SC-003)", async () => {
     async run(input: StrategyRunInput): Promise<StrategyResult> {
       return {
         answer: `echo:${input.message}`,
-        trace: [{ type: "answer", content: input.message }],
+        trace: [{ node: "test",  type: "answer", content: input.message }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },

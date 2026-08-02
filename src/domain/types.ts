@@ -9,7 +9,9 @@ export type TraceEventType =
   | "plan"
   | "critique"
   | "answer"
-  | "summarize";
+  | "summarize"
+  | "route"
+  | "fallback";
 
 export interface Service {
   name: string;
@@ -49,6 +51,8 @@ export interface SeedPayload {
 export interface TraceEvent {
   type: TraceEventType;
   content: string;
+  /** Production-graph (or strategy) node that produced this event. */
+  node: string;
   tool?: string;
   toolArgs?: Record<string, unknown>;
   /** Reflection-layer critique round (1-based). */
@@ -57,6 +61,12 @@ export interface TraceEvent {
   approved?: boolean;
   /** Unix timestamp (ms) when the critique event was recorded. */
   timestampMs?: number;
+  /** Present when type === "route": chosen production route. */
+  route?: string;
+  /** Present when type === "route": true if body override. */
+  override?: boolean;
+  /** Present when type === "route": classifier justification (mirrors content). */
+  reason?: string;
 }
 
 /** Estimated prompt contribution by source (chars/4). Always five keys on /chat. */
@@ -79,6 +89,12 @@ export interface ExecutionMetrics {
   promptTokens?: number;
   /** Estimated tokens by context source (HTTP /chat). */
   contextBreakdown?: ContextBreakdown;
+  /** Production-graph route chosen for this turn (`react` | `planExecute` | `reflect`). */
+  route?: string;
+  /** Router justification (classifier reason or override/fallback text). */
+  routeReason?: string;
+  /** Id of the model that produced the turn answer (primary or reserve). */
+  modelUsed?: string;
 }
 
 export interface MemoryFact {
@@ -172,4 +188,97 @@ export interface OpsStore {
   createIncident(data: Pick<Incident, "title" | "service" | "severity">): Incident;
   resolveIncident(id: string, summary?: string | null): Incident;
   getRunbook(service: string): Runbook;
+}
+
+export type RequestStatus = "success" | "error";
+
+export type LogLevel = "info" | "warn" | "error";
+
+/** Scalar-only metadata for structured logs (no message/answer/trace payloads). */
+export type LogMeta = Record<string, string | number | boolean | null | undefined>;
+
+export interface Logger {
+  info(event: string, meta?: LogMeta): void;
+  warn(event: string, meta?: LogMeta): void;
+  error(event: string, meta?: LogMeta): void;
+}
+
+export interface RequestRecord {
+  id: string;
+  createdAt: number;
+  finishedAt: number;
+  status: RequestStatus;
+  httpStatus: number;
+  conversationId: string | null;
+  userId: string | null;
+  metrics: ExecutionMetrics;
+  latencyMs: number | null;
+  llmCalls: number | null;
+  route: string | null;
+  modelUsed: string | null;
+}
+
+export interface SaveRequestInput {
+  id: string;
+  createdAt: number;
+  finishedAt: number;
+  status: RequestStatus;
+  httpStatus: number;
+  conversationId?: string | null;
+  userId?: string | null;
+  metrics: ExecutionMetrics;
+  trace: TraceEvent[];
+}
+
+export interface RequestStore {
+  save(input: SaveRequestInput): void;
+  getById(id: string): { request: RequestRecord; trace: TraceEvent[] } | null;
+  /** Aggregate audit stats for requests with createdAt >= sinceMs. */
+  stats(sinceMs: number): RequestStatsSummary;
+}
+
+export interface RequestStatsBucket {
+  total: number;
+  errors: number;
+  tokens: number;
+  costUsd: number;
+}
+
+export interface RequestStatsSummary {
+  total: number;
+  errors: number;
+  tokens: number;
+  costUsd: number;
+  latency: { p50: number | null; p95: number | null };
+  byRoute: Record<string, RequestStatsBucket>;
+  byModel: Record<string, RequestStatsBucket>;
+}
+
+/** Snapshot of a validated chat request deferred for human approval. */
+export interface ChatRequestSnapshot {
+  message: string;
+  userId: string;
+  strategy?: string;
+  reflect: boolean;
+  conversationId?: string;
+}
+
+export interface PendingApproval {
+  approvalId: string;
+  requestId: string;
+  createdAt: number;
+  summary: string;
+  chatRequest: ChatRequestSnapshot;
+  conversationId: string | null;
+}
+
+export type ApprovalDecisionValue = "approve" | "deny";
+
+export interface ApprovalStore {
+  save(
+    input: Omit<PendingApproval, "approvalId"> & { approvalId?: string },
+  ): PendingApproval;
+  get(approvalId: string): PendingApproval | null;
+  /** Atomic get + delete. */
+  take(approvalId: string): PendingApproval | null;
 }

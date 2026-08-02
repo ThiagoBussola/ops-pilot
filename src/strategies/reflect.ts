@@ -1,4 +1,4 @@
-import type { ChatOpenAI } from "@langchain/openai";
+import type { OpsChatModel } from "../agents/model.js";
 import { z } from "zod";
 
 import { addPromptTokens } from "../context/tokens.js";
@@ -8,6 +8,7 @@ import type {
   StrategyRunInput,
   TraceEvent,
 } from "../domain/types.js";
+import { stampNode } from "../graph/stamp-node.js";
 
 export const critiqueSchema = z.object({
   approved: z.boolean(),
@@ -31,7 +32,7 @@ export type CriticFn = (
 export interface ReflectionOpts {
   maxReflections?: number;
   critic?: CriticFn;
-  modelFactory?: () => ChatOpenAI;
+  modelFactory?: () => OpsChatModel;
 }
 
 const CRITIC_PROMPT = [
@@ -58,7 +59,7 @@ export function enrichInputWithFeedback(
   return `[Critique - Round ${round}]:\n${feedbackBody}\n\nOriginal request:\n${originalInput}`;
 }
 
-export function createLLMCritic(modelFactory: () => ChatOpenAI): CriticFn {
+export function createLLMCritic(modelFactory: () => OpsChatModel): CriticFn {
   return async (answer, trace, originalInput) => {
     try {
       const raw = await modelFactory()
@@ -129,10 +130,12 @@ export function withReflection(
       );
       accumulatedTrace.push(...currentResult.trace);
 
+      const nodeName = `reflect:${strategy.name}`;
+
       if (effectiveMax === 0 || !criticFn) {
         return {
           answer: currentResult.answer,
-          trace: accumulatedTrace,
+          trace: stampNode(nodeName, accumulatedTrace),
           metrics: metricsWithOptionalPromptTokens(
             totalLlmCalls,
             Date.now() - startedAt,
@@ -153,6 +156,7 @@ export function withReflection(
         accumulatedTrace.push({
           type: "critique",
           content: critiqueEventContent(critiqueResult.feedback),
+          node: `reflect:${strategy.name}`,
           round,
           approved: critiqueResult.approved,
           timestampMs: Date.now(),
@@ -177,7 +181,7 @@ export function withReflection(
 
       return {
         answer: currentResult.answer,
-        trace: accumulatedTrace,
+        trace: stampNode(nodeName, accumulatedTrace),
         metrics: metricsWithOptionalPromptTokens(
           totalLlmCalls + criticCallCount,
           Date.now() - startedAt,

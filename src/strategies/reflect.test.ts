@@ -34,8 +34,8 @@ function mockBase(overrides?: {
       return {
         answer: `answer-for:${input.message}`,
         trace: [
-          { type: "observation", content: "obs-1" },
-          { type: "answer", content: `answer-for:${input.message}` },
+          { node: "test", type: "observation", content: "obs-1" },
+          { type: "answer", content: `answer-for:${input.message}`, node: "test" },
         ],
         metrics: { llmCalls: 1, latencyMs: 10 },
       };
@@ -178,7 +178,7 @@ test("US2: immediate approval metrics — llmCalls === base + 1 (SC-003)", async
   const base = mockBase({
     run: async () => ({
       answer: "a",
-      trace: [{ type: "answer", content: "a" }],
+      trace: [{ node: "test",  type: "answer", content: "a" }],
       metrics: { llmCalls: 2, latencyMs: 5 },
     }),
   });
@@ -217,7 +217,7 @@ test("US2: latencyMs is wall-clock of full run()", async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       return {
         answer: "a",
-        trace: [{ type: "answer", content: "a" }],
+        trace: [{ node: "test",  type: "answer", content: "a" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -237,7 +237,7 @@ test("US2: withReflection sums promptTokens across base runs; omits when none", 
   const withTokens = mockBase({
     run: async () => ({
       answer: "a",
-      trace: [{ type: "answer", content: "a" }],
+      trace: [{ node: "test",  type: "answer", content: "a" }],
       metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 10 },
     }),
   });
@@ -254,7 +254,7 @@ test("US2: withReflection sums promptTokens across base runs; omits when none", 
   const without = mockBase({
     run: async () => ({
       answer: "a",
-      trace: [{ type: "answer", content: "a" }],
+      trace: [{ node: "test",  type: "answer", content: "a" }],
       metrics: { llmCalls: 1, latencyMs: 1 },
     }),
   });
@@ -313,7 +313,7 @@ test("FR-012: createLLMCritic fail-safe returns approved on model error", async 
   const critic = createLLMCritic(() => {
     throw new Error("boom");
   });
-  const result = await critic("answer", [{ type: "observation", content: "o" }], "pedido");
+  const result = await critic("answer", [{ node: "test",  type: "observation", content: "o" }], "pedido");
   assert.deepEqual(result, { approved: true, feedback: "" });
 });
 

@@ -51,10 +51,20 @@ test("buildTraceFromMessages keeps action tool and args", () => {
 
 test("buildPlanExecuteTrace supports baseline plan->action->observation->answer", () => {
   const trace = buildPlanExecuteTrace([
-    { type: "plan", content: "1. List alerts" },
-    { type: "action", content: "list_alerts", tool: "list_alerts", toolArgs: { status: "firing" } },
-    { type: "observation", content: "Found 3 firing alert(s)" },
-    { type: "answer", content: "Serviços com alertas: payment-api, auth-service, order-service" },
+    { node: "test", type: "plan", content: "1. List alerts" },
+    {
+      node: "test",
+      type: "action",
+      content: "list_alerts",
+      tool: "list_alerts",
+      toolArgs: { status: "firing" },
+    },
+    { node: "test", type: "observation", content: "Found 3 firing alert(s)" },
+    {
+      node: "test",
+      type: "answer",
+      content: "Serviços com alertas: payment-api, auth-service, order-service",
+    },
   ]);
 
   assert.deepEqual(trace.map((event) => event.type), ["plan", "action", "observation", "answer"]);
@@ -62,13 +72,25 @@ test("buildPlanExecuteTrace supports baseline plan->action->observation->answer"
 
 test("buildPlanExecuteTrace supports replanning with critique", () => {
   const trace = buildPlanExecuteTrace([
-    { type: "plan", content: "1. Check alerts" },
-    { type: "action", content: "list_alerts", tool: "list_alerts", toolArgs: { status: "firing" } },
-    { type: "observation", content: "Found 3 firing alert(s)" },
-    { type: "critique", content: "1. Open incident for payment-api" },
-    { type: "action", content: "open_incident", tool: "open_incident", toolArgs: { service: "payment-api" } },
-    { type: "observation", content: "Incident created" },
-    { type: "answer", content: "Incidente aberto com sucesso." },
+    { node: "test", type: "plan", content: "1. Check alerts" },
+    {
+      node: "test",
+      type: "action",
+      content: "list_alerts",
+      tool: "list_alerts",
+      toolArgs: { status: "firing" },
+    },
+    { node: "test", type: "observation", content: "Found 3 firing alert(s)" },
+    { node: "test", type: "critique", content: "1. Open incident for payment-api" },
+    {
+      node: "test",
+      type: "action",
+      content: "open_incident",
+      tool: "open_incident",
+      toolArgs: { service: "payment-api" },
+    },
+    { node: "test", type: "observation", content: "Incident created" },
+    { node: "test", type: "answer", content: "Incidente aberto com sucesso." },
   ]);
 
   assert.deepEqual(trace.map((event) => event.type), [
@@ -84,4 +106,12 @@ test("buildPlanExecuteTrace supports replanning with critique", () => {
     assert.ok(event.tool);
     assert.ok(event.toolArgs);
   }
+});
+
+test("buildTraceFromMessages stamps node argument", () => {
+  const trace = buildTraceFromMessages(
+    [new AIMessage({ content: "hello" })],
+    "react",
+  );
+  assert.ok(trace.every((event) => event.node === "react"));
 });

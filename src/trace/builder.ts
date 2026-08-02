@@ -1,6 +1,7 @@
 import { AIMessage, BaseMessage, ToolMessage } from "@langchain/core/messages";
 
 import type { TraceEvent } from "../domain/types.js";
+import { stampNode } from "../graph/stamp-node.js";
 
 function toText(content: unknown): string {
   if (typeof content === "string") {
@@ -23,7 +24,10 @@ function toText(content: unknown): string {
   return String(content ?? "");
 }
 
-export function buildTraceFromMessages(messages: BaseMessage[]): TraceEvent[] {
+export function buildTraceFromMessages(
+  messages: BaseMessage[],
+  node = "react",
+): TraceEvent[] {
   const trace: TraceEvent[] = [];
 
   for (const message of messages) {
@@ -31,7 +35,7 @@ export function buildTraceFromMessages(messages: BaseMessage[]): TraceEvent[] {
       const content = toText(message.content).trim();
       if (message.tool_calls && message.tool_calls.length > 0) {
         if (content.length > 0) {
-          trace.push({ type: "thought", content });
+          trace.push({ type: "thought", content, node });
         }
 
         for (const call of message.tool_calls) {
@@ -40,33 +44,37 @@ export function buildTraceFromMessages(messages: BaseMessage[]): TraceEvent[] {
             content: `${call.name}(${JSON.stringify(call.args ?? {})})`,
             tool: call.name,
             toolArgs: (call.args as Record<string, unknown>) ?? {},
+            node,
           });
         }
       } else if (content.length > 0) {
-        trace.push({ type: "answer", content });
+        trace.push({ type: "answer", content, node });
       }
       continue;
     }
 
     if (message instanceof ToolMessage) {
       const content = toText(message.content).trim();
-      trace.push({ type: "observation", content });
+      trace.push({ type: "observation", content, node });
     }
   }
 
   const hasAnswer = trace.some((event) => event.type === "answer");
   if (!hasAnswer) {
-    trace.push({ type: "answer", content: "No answer generated." });
+    trace.push({ type: "answer", content: "No answer generated.", node });
   }
 
   return trace;
 }
 
-export function buildPlanExecuteTrace(events: TraceEvent[]): TraceEvent[] {
+export function buildPlanExecuteTrace(
+  events: TraceEvent[],
+  node = "planExecute",
+): TraceEvent[] {
   const allowed = new Set(["plan", "action", "observation", "critique", "answer"]);
   const filtered = events.filter((event) => allowed.has(event.type));
   if (filtered.length === 0 || filtered[filtered.length - 1]?.type !== "answer") {
-    filtered.push({ type: "answer", content: "No final answer generated." });
+    filtered.push({ type: "answer", content: "No final answer generated.", node });
   }
-  return filtered;
+  return stampNode(node, filtered);
 }

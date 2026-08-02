@@ -1,4 +1,4 @@
-import type { ChatOpenAI } from "@langchain/openai";
+import type { OpsChatModel } from "../agents/model.js";
 import { z } from "zod";
 
 import type { MemoryStore } from "../domain/types.js";
@@ -32,7 +32,7 @@ export type LearningReflectorFn = (userMessage: string) => Promise<LearningRefle
 const NO_LEARNING: LearningReflection = { hasLearning: false, fact: "" };
 
 export function createLLMLearningReflector(
-  modelFactory: () => ChatOpenAI,
+  modelFactory: () => OpsChatModel,
 ): LearningReflectorFn {
   return async (userMessage: string): Promise<LearningReflection> => {
     try {

@@ -2,7 +2,7 @@ import { AIMessage } from "@langchain/core/messages";
 import type { DynamicStructuredTool } from "@langchain/core/tools";
 import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
-import type { ChatOpenAI } from "@langchain/openai";
+import type { OpsChatModel } from "../agents/model.js";
 import { z } from "zod";
 
 import { formatHistoryForPrompt } from "../chat/run-chat.js";
@@ -13,10 +13,11 @@ import type {
   StrategyRunInput,
   TraceEvent,
 } from "../domain/types.js";
+import { stampNode } from "../graph/stamp-node.js";
 import { OPSPILOT_SYSTEM_PROMPT } from "../agents/system-prompt.js";
 
 interface PlanExecuteOptions {
-  modelFactory: () => ChatOpenAI;
+  modelFactory: () => OpsChatModel;
   tools: DynamicStructuredTool[];
   maxIterations: number;
   /** When false, skip the LLM replanner and execute the plan linearly. Default: true. */
@@ -124,9 +125,7 @@ function extractActionObservationTrace(messages: unknown[]): TraceEvent[] {
   for (const message of messages) {
     if (message instanceof AIMessage && Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
-        events.push({
-          type: "action",
-          content: `${call.name}(${JSON.stringify(call.args ?? {})})`,
+        events.push({ type: "action", node: "plan-and-execute", content: `${call.name}(${JSON.stringify(call.args ?? {})})`,
           tool: call.name,
           toolArgs: (call.args as Record<string, unknown>) ?? {},
         });
@@ -143,7 +142,7 @@ function extractActionObservationTrace(messages: unknown[]): TraceEvent[] {
     ) {
       const content = String((message as { content: unknown }).content ?? "").trim();
       if (content.length > 0) {
-        events.push({ type: "observation", content });
+        events.push({ type: "observation", node: "plan-and-execute", content });
       }
     }
   }
@@ -153,7 +152,7 @@ function extractActionObservationTrace(messages: unknown[]): TraceEvent[] {
 
 export class PlanExecuteStrategy implements ReasoningStrategy {
   readonly name = "plan-and-execute";
-  private readonly modelFactory: () => ChatOpenAI;
+  private readonly modelFactory: () => OpsChatModel;
   private readonly tools: DynamicStructuredTool[];
   private readonly maxIterations: number;
   private readonly enableReplanner: boolean;
@@ -199,7 +198,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
 
       return {
         plan: steps,
-        trace: [{ type: "plan" as const, content: formatPlan(steps) }],
+        trace: [{ type: "plan" as const, content: formatPlan(steps) , node: "plan-and-execute" }],
         llmCalls: state.llmCalls + 1,
       };
     };
@@ -211,7 +210,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
 
       const [currentStep, ...remainingPlan] = state.plan;
       const agent = createReactAgent({
-        llm: this.modelFactory(),
+        llm: this.modelFactory() as never,
         tools: this.tools,
         prompt: OPSPILOT_SYSTEM_PROMPT,
       });
@@ -263,7 +262,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
         );
         return {
           answer,
-          trace: [{ type: "answer" as const, content: answer }],
+          trace: [{ type: "answer" as const, content: answer , node: "plan-and-execute" }],
         };
       }
 
@@ -296,7 +295,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
         const answer = finishFromDone(state);
         return {
           answer,
-          trace: [{ type: "answer" as const, content: answer }],
+          trace: [{ type: "answer" as const, content: answer , node: "plan-and-execute" }],
           llmCalls: state.llmCalls + 1,
         };
       }
@@ -305,7 +304,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
         const answer = decision.answer?.trim() || finishFromDone(state);
         return {
           answer,
-          trace: [{ type: "answer" as const, content: answer }],
+          trace: [{ type: "answer" as const, content: answer , node: "plan-and-execute" }],
           llmCalls: state.llmCalls + 1,
         };
       }
@@ -317,14 +316,14 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
           const answer = finishFromDone(state);
           return {
             answer,
-            trace: [{ type: "answer" as const, content: answer }],
+            trace: [{ type: "answer" as const, content: answer , node: "plan-and-execute" }],
             llmCalls: state.llmCalls + 1,
           };
         }
 
         return {
           plan: revisedPlan,
-          trace: [{ type: "critique" as const, content: formatPlan(revisedPlan) }],
+          trace: [{ type: "critique" as const, content: formatPlan(revisedPlan) , node: "plan-and-execute" }],
           llmCalls: state.llmCalls + 1,
         };
       }
@@ -333,13 +332,13 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
         const answer = finishFromDone(state);
         return {
           answer,
-          trace: [{ type: "answer" as const, content: answer }],
+          trace: [{ type: "answer" as const, content: answer , node: "plan-and-execute" }],
           llmCalls: state.llmCalls + 1,
         };
       }
 
       return {
-        trace: [{ type: "critique" as const, content: "Plano atual segue válido; continuar execução." }],
+        trace: [{ type: "critique" as const, content: "Plano atual segue válido; continuar execução." , node: "plan-and-execute" }],
         llmCalls: state.llmCalls + 1,
       };
     };
@@ -348,7 +347,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
       const answer = finishFromDone(state);
       return {
         answer,
-        trace: [{ type: "answer" as const, content: answer }],
+        trace: [{ type: "answer" as const, content: answer , node: "plan-and-execute" }],
       };
     };
 
@@ -400,7 +399,11 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
       { recursionLimit: Math.max(10, stepLimit * 5) },
     );
 
-    const trace = result.trace.length > 0 ? result.trace : [{ type: "answer" as const, content: "No answer generated." }];
+    const rawTrace =
+      result.trace.length > 0
+        ? result.trace
+        : [{ type: "answer" as const, content: "No answer generated.", node: this.name }];
+    const trace = stampNode(this.name, rawTrace);
     const answer = result.answer || trace.filter((event) => event.type === "answer").at(-1)?.content || "No answer generated.";
     const promptTokens =
       result.promptTokenHits > 0 ? result.promptTokens : undefined;

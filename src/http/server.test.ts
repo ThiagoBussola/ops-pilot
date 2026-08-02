@@ -10,10 +10,15 @@ import type {
   StrategyRunInput,
 } from "../domain/types.js";
 import type { CritiqueResult } from "../strategies/reflect.js";
+import { withReflection } from "../strategies/reflect.js";
 import { createFakeConversationSummarizer } from "../chat/history-summarizer.js";
+import type { ClassifyRouteFn } from "../graph/router.js";
 import { FakeEmbedder } from "../memory/fake-embedder.js";
 import { SqliteMemoryStore } from "../memory/memory-store.js";
+import { createLogger } from "../obs/logger.js";
 import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
+import { SqliteRequestStore } from "../store/sqlite-request-store.js";
+import { MemoryApprovalStore } from "../store/memory-approval-store.js";
 import { createApp, type ChatAppDeps } from "./server.js";
 
 function fakeStrategy(overrides?: {
@@ -36,7 +41,7 @@ function fakeStrategy(overrides?: {
       }
       return {
         answer: `echo:${input.message}`,
-        trace: [{ type: "answer", content: `echo:${input.message}` }],
+        trace: [{ type: "answer", content: `echo:${input.message}`, node: overrides?.name ?? "fake" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -52,13 +57,51 @@ function memoryStore(embedder = new FakeEmbedder()) {
   return new SqliteMemoryStore(":memory:", embedder);
 }
 
+function defaultClassify(route: "react" | "planExecute" | "reflect" = "react"): ClassifyRouteFn {
+  return async () => ({ route, reason: `test-default:${route}` });
+}
+
+function productionBundle(react: ReasoningStrategy, extras?: {
+  planExecute?: ReasoningStrategy;
+  reflect?: ReasoningStrategy;
+}) {
+  return {
+    react,
+    planExecute: extras?.planExecute ?? fakeStrategy({ name: "planExecute" }),
+    reflect: extras?.reflect ?? fakeStrategy({ name: "reflect" }),
+  };
+}
+
 function testApp(
-  overrides: Partial<ChatAppDeps> & Pick<ChatAppDeps, "registry">,
+  overrides: Partial<ChatAppDeps> & {
+    react?: ReasoningStrategy & { calls?: number };
+    planExecute?: ReasoningStrategy;
+    reflect?: ReasoningStrategy;
+  } = {},
 ): ReturnType<typeof createApp> {
+  const react = overrides.react ?? overrides.strategies?.react ?? fakeStrategy({ name: "react" });
+  const strategies = overrides.strategies ?? productionBundle(react, {
+    planExecute: overrides.planExecute,
+    reflect: overrides.reflect,
+  });
+  const {
+    react: _r,
+    planExecute: _p,
+    reflect: _f,
+    strategies: _s,
+    classifyRoute,
+    ...rest
+  } = overrides as Partial<ChatAppDeps> & {
+    react?: ReasoningStrategy;
+    planExecute?: ReasoningStrategy;
+    reflect?: ReasoningStrategy;
+  };
   return createApp({
     conversations: memoryConversations(),
     memories: memoryStore(),
-    ...overrides,
+    strategies,
+    classifyRoute: classifyRoute ?? defaultClassify("react"),
+    ...rest,
   });
 }
 
@@ -87,7 +130,11 @@ async function withServer(
 async function postChat(
   baseUrl: string,
   body: unknown,
-): Promise<{ status: number; json: Record<string, unknown> }> {
+): Promise<{
+  status: number;
+  json: Record<string, unknown>;
+  headers: Headers;
+}> {
   const payload =
     body !== null && typeof body === "object" && !Array.isArray(body)
       ? { userId: "test-user", ...(body as Record<string, unknown>) }
@@ -98,13 +145,17 @@ async function postChat(
     body: JSON.stringify(payload),
   });
   const json = (await response.json()) as Record<string, unknown>;
-  return { status: response.status, json };
+  return { status: response.status, json, headers: response.headers };
+}
+
+function memoryRequests() {
+  return new SqliteRequestStore(":memory:");
 }
 
 test("US1: POST /chat happy path with fake react strategy", async () => {
   const react = fakeStrategy({ name: "react" });
   const conversations = memoryConversations();
-  const app = testApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ react, conversations });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, { message: "oi" });
@@ -125,40 +176,99 @@ test("US1: POST /chat happy path with fake react strategy", async () => {
     assert.equal(metrics.recalledMemories, 0);
     assert.equal(react.calls, 1);
     assert.equal(conversations.lastMessages(String(json.conversationId), 12).length, 2);
+    const m = json.metrics as { route?: string; routeReason?: string; modelUsed?: string };
+    assert.equal(m.route, "react");
+    assert.ok(typeof m.routeReason === "string" && m.routeReason.length > 0);
+    assert.ok(typeof m.modelUsed === "string" && m.modelUsed.length > 0);
   });
 });
 
-test("US1: explicit strategy selects registry entry", async () => {
+test("model resilience: ModelUnavailableError → 503 model_unavailable", async () => {
+  const { ModelUnavailableError } = await import("../domain/errors.js");
+  const react = fakeStrategy({
+    name: "react",
+    run: async () => {
+      throw new ModelUnavailableError("primary and backup failed");
+    },
+  });
+  const app = testApp({ react });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, { message: "down" });
+    assert.equal(status, 503);
+    assert.equal(json.error, "model_unavailable");
+    assert.match(String(json.message), /failed/i);
+  });
+});
+
+test("model resilience: fallback event + modelUsed when telemetry marks reserve", async () => {
+  const {
+    createEmptyTelemetry,
+    runWithModelTelemetry,
+    recordModelSuccess,
+  } = await import("../llm/model-telemetry.js");
+  const { runProductionTurn } = await import("../graph/production-graph.js");
+  const conversations = memoryConversations();
+  const memories = memoryStore();
   const react = fakeStrategy({ name: "react" });
-  const other = fakeStrategy({ name: "other" });
+  const strategies = productionBundle(react);
+
+  const tel = createEmptyTelemetry("openai/primary", "openai/reserve");
+  const result = await runWithModelTelemetry(tel, async () => {
+    recordModelSuccess("openai/reserve");
+    return runProductionTurn(
+      {
+        conversations,
+        memories,
+        strategies,
+        classifyRoute: defaultClassify("react"),
+      },
+      { message: "oi", userId: "u1" },
+    );
+  });
+
+  assert.equal(result.metrics.modelUsed, "openai/reserve");
+  assert.ok(result.trace.some((e) => e.type === "fallback"));
+});
+
+test("US1: explicit strategy override selects planExecute node", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const planExecute = fakeStrategy({ name: "planExecute" });
   const app = testApp({
-    registry: createRegistry({ react, other }),
+    react,
+    planExecute,
+    classifyRoute: defaultClassify("reflect"),
   });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, {
       message: "ping",
-      strategy: "other",
+      strategy: "planExecute",
     });
     assert.equal(status, 200);
     assert.equal(json.answer, "echo:ping");
-    assert.equal(other.calls, 1);
+    assert.equal(planExecute.calls, 1);
     assert.equal(react.calls, 0);
+    const trace = json.trace as Array<{ type: string; route?: string; override?: boolean }>;
+    const routeEvent = trace.find((e) => e.type === "route");
+    assert.equal(routeEvent?.route, "planExecute");
+    assert.equal(routeEvent?.override, true);
   });
 });
 
 test("US1: reflect true with approving critic adds critique overhead", async () => {
   const react = fakeStrategy({ name: "react" });
   const criticCalls: number[] = [];
-  const app = testApp({
-    registry: createRegistry({ react }),
-    conversations: memoryConversations(),
-    reflectionOpts: {
-      critic: async (): Promise<CritiqueResult> => {
-        criticCalls.push(1);
-        return { approved: true, feedback: "" };
-      },
+  const reflect = withReflection(react, {
+    critic: async (): Promise<CritiqueResult> => {
+      criticCalls.push(1);
+      return { approved: true, feedback: "" };
     },
+  });
+  const app = testApp({
+    react,
+    reflect,
+    conversations: memoryConversations(),
   });
 
   await withServer(app, async (baseUrl) => {
@@ -171,15 +281,16 @@ test("US1: reflect true with approving critic adds critique overhead", async () 
     assert.equal(criticCalls.length, 1);
     const metrics = json.metrics as { llmCalls: number };
     assert.equal(metrics.llmCalls, 2);
-    const trace = json.trace as Array<{ type: string; approved?: boolean }>;
+    const trace = json.trace as Array<{ type: string; approved?: boolean; node?: string }>;
     assert.ok(trace.some((event) => event.type === "critique" && event.approved === true));
+    assert.ok(trace.every((event) => typeof event.node === "string" && event.node.length > 0));
   });
 });
 
 test("US2: invalid body returns 400 with zod issues", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
   });
 
@@ -200,7 +311,7 @@ test("US2: invalid body returns 400 with zod issues", async () => {
 test("US2: unknown strategy returns 422", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
   });
 
@@ -216,10 +327,10 @@ test("US2: unknown strategy returns 422", async () => {
   });
 });
 
-test("US2: omitted strategy and reflect default to react without reflection", async () => {
+test("US2: omitted strategy uses router (default fake → react) without reflection", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
   });
 
@@ -230,15 +341,17 @@ test("US2: omitted strategy and reflect default to react without reflection", as
     assert.equal(react.calls, 1);
     const metrics = json.metrics as { llmCalls: number };
     assert.equal(metrics.llmCalls, 1);
-    const trace = json.trace as Array<{ type: string }>;
+    const trace = json.trace as Array<{ type: string; override?: boolean; node?: string }>;
+    assert.ok(trace.some((event) => event.type === "route" && event.override === false));
     assert.ok(!trace.some((event) => event.type === "critique"));
+    assert.ok(trace.every((e) => typeof e.node === "string" && e.node.length > 0));
   });
 });
 
 test("US3: slow strategy exceeds injected timeout -> 504", async () => {
   const react = fakeStrategy({ name: "react", delayMs: 80 });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
     timeoutMs: 20,
   });
@@ -254,7 +367,7 @@ test("US3: slow strategy exceeds injected timeout -> 504", async () => {
 test("US3: fast strategy returns 200 under timeout", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
     timeoutMs: 5_000,
   });
@@ -265,21 +378,19 @@ test("US3: fast strategy returns 200 under timeout", async () => {
   });
 });
 
-test("US4: custom-named fake-only registry works end-to-end", async () => {
+test("US4: unknown custom strategy returns 422; registry helper still works for Arena", async () => {
+  const react = fakeStrategy({ name: "react" });
   const custom = fakeStrategy({ name: "custom-ops" });
-  const app = testApp({
-    registry: createRegistry({ "custom-ops": custom }),
-    conversations: memoryConversations(),
-  });
+  const app = testApp({ react });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, {
       message: "extensível",
       strategy: "custom-ops",
     });
-    assert.equal(status, 200);
-    assert.equal(json.answer, "echo:extensível");
-    assert.equal(custom.calls, 1);
+    assert.equal(status, 422);
+    assert.equal(json.error, "unknown_strategy");
+    assert.equal(custom.calls, 0);
     assert.deepEqual(listStrategies(createRegistry({ "custom-ops": custom })), [
       "custom-ops",
     ]);
@@ -295,10 +406,30 @@ test("US4: resolveStrategy with reflect returns reflect: name", () => {
   assert.equal(resolved.name, "reflect:react");
 });
 
+test("US4: legacy strategy plan-and-execute aliases to planExecute override", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const planExecute = fakeStrategy({ name: "planExecute" });
+  const app = testApp({ react, planExecute });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "plano",
+      strategy: "plan-and-execute",
+    });
+    assert.equal(status, 200);
+    assert.equal(planExecute.calls, 1);
+    assert.equal(react.calls, 0);
+    const trace = json.trace as Array<{ type: string; route?: string; override?: boolean }>;
+    const routeEvent = trace.find((e) => e.type === "route");
+    assert.equal(routeEvent?.route, "planExecute");
+    assert.equal(routeEvent?.override, true);
+  });
+});
+
 test("POST /chat accepts curl-style body without application/json Content-Type", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
   });
 
@@ -316,7 +447,7 @@ test("POST /chat accepts curl-style body without application/json Content-Type",
 
 test("semantic memory: missing userId returns 400", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = testApp({ registry: createRegistry({ react }) });
+  const app = testApp({ react });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, {
@@ -342,7 +473,7 @@ test("semantic memory: injects Relevant memories into strategy message", async (
   await memories.remember("plantonista", "checkout latency high");
 
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     memories,
   });
 
@@ -362,7 +493,7 @@ test("semantic memory: injects Relevant memories into strategy message", async (
 
 test("semantic memory: no qualifying memories leaves message unchanged", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = testApp({ registry: createRegistry({ react }) });
+  const app = testApp({ react });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, { message: "hello alone" });
@@ -380,7 +511,7 @@ test("learning reflector: async remember after 200 with fake reflector", async (
     .setAxis("what are my priorities?", 0);
   const memories = memoryStore(embedder);
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     memories,
     learningReflector: async () => ({
       hasLearning: true,
@@ -407,7 +538,7 @@ test("POST /memories stores fact for userId", async () => {
   const fact = "prefere os alertas críticos primeiro";
   const embedder = new FakeEmbedder().setAxis(fact, 2);
   const memories = memoryStore(embedder);
-  const app = testApp({ registry: createRegistry({ react }), memories });
+  const app = testApp({ react, memories });
 
   await withServer(app, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/memories`, {
@@ -434,7 +565,7 @@ test("POST /memories stores fact for userId", async () => {
 test("persistent: continue conversation reuses conversationId and injects history", async () => {
   const react = fakeStrategy({ name: "react" });
   const conversations = memoryConversations();
-  const app = testApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ react, conversations });
 
   await withServer(app, async (baseUrl) => {
     const first = await postChat(baseUrl, { message: "turno1" });
@@ -458,7 +589,7 @@ test("persistent: continue conversation reuses conversationId and injects histor
 test("persistent: unknown conversationId returns 404 without running strategy", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
   });
 
@@ -478,7 +609,7 @@ test("persistent: unknown conversationId returns 404 without running strategy", 
 test("persistent: invalid conversationId returns 400", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations: memoryConversations(),
   });
 
@@ -500,7 +631,7 @@ test("persistent: historyMessages capped at 8", async () => {
   for (let i = 0; i < 15; i += 1) {
     conversations.append(cid, i % 2 === 0 ? "user" : "assistant", `m${i}`);
   }
-  const app = testApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ react, conversations });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, {
@@ -522,7 +653,7 @@ test("persistent: throwing strategy does not append assistant", async () => {
       throw new Error("boom");
     },
   });
-  const app = testApp({ registry: createRegistry({ react }), conversations });
+  const app = testApp({ react, conversations });
 
   await withServer(app, async (baseUrl) => {
     const before = conversations.create();
@@ -544,11 +675,11 @@ test("context metrics: contextBreakdown always present; promptTokens optional", 
     name: "react",
     run: async () => ({
       answer: "ok",
-      trace: [{ type: "answer", content: "ok" }],
+      trace: [{ node: "test",  type: "answer", content: "ok" }],
       metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 99 },
     }),
   });
-  const appWith = testApp({ registry: createRegistry({ react: withTokens }) });
+  const appWith = testApp({ react: withTokens });
 
   await withServer(appWith, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, { message: "oi" });
@@ -589,7 +720,7 @@ test("context metrics: contextBreakdown always present; promptTokens optional", 
   });
 
   const withoutTokens = fakeStrategy({ name: "react" });
-  const appWithout = testApp({ registry: createRegistry({ react: withoutTokens }) });
+  const appWithout = testApp({ react: withoutTokens });
 
   await withServer(appWithout, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, { message: "oi" });
@@ -612,7 +743,7 @@ test("history summarization: summarize event after 16 seeded messages", async ()
     calls += 1;
   });
   const app = testApp({
-    registry: createRegistry({ react }),
+    react,
     conversations,
     summarizer,
   });
@@ -633,5 +764,299 @@ test("history summarization: summarize event after 16 seeded messages", async ()
     assert.equal(metrics.historyMessages, 8);
     assert.ok(metrics.contextBreakdown.summary > 0);
     assert.match(react.inputs[0]?.message ?? "", /Conversation summary:/);
+  });
+});
+
+test("015: POST /chat 200 requestId equals X-Request-Id", async () => {
+  const app = testApp({ requests: memoryRequests() });
+  await withServer(app, async (baseUrl) => {
+    const { status, json, headers } = await postChat(baseUrl, { message: "oi" });
+    assert.equal(status, 200);
+    assert.ok(typeof json.requestId === "string" && (json.requestId as string).length > 0);
+    assert.equal(json.requestId, headers.get("x-request-id"));
+  });
+});
+
+test("015: successive chats get distinct requestIds", async () => {
+  const app = testApp({ requests: memoryRequests() });
+  await withServer(app, async (baseUrl) => {
+    const a = await postChat(baseUrl, { message: "a" });
+    const b = await postChat(baseUrl, { message: "b" });
+    assert.equal(a.status, 200);
+    assert.equal(b.status, 200);
+    assert.notEqual(a.json.requestId, b.json.requestId);
+  });
+});
+
+test("015: invalid body 400 still sets X-Request-Id", async () => {
+  const app = testApp({ requests: memoryRequests() });
+  await withServer(app, async (baseUrl) => {
+    const { status, json, headers } = await postChat(baseUrl, {});
+    assert.equal(status, 400);
+    assert.equal(json.error, "validation_error");
+    const rid = headers.get("x-request-id");
+    assert.ok(rid && rid.length > 0);
+  });
+});
+
+test("015: GET /requests/:id returns ordered trace after chat", async () => {
+  const react = fakeStrategy({
+    name: "react",
+    run: async (input) => ({
+      answer: `echo:${input.message}`,
+      trace: [
+        { type: "thought", content: "t1", node: "react" },
+        { type: "answer", content: `echo:${input.message}`, node: "react" },
+      ],
+      metrics: { llmCalls: 1, latencyMs: 1 },
+    }),
+  });
+  const requests = memoryRequests();
+  const app = testApp({ react, requests });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, { message: "audit" });
+    assert.equal(status, 200);
+    const requestId = String(json.requestId);
+    const response = await fetch(`${baseUrl}/requests/${requestId}`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      request: { id: string; status: string };
+      trace: Array<{ type: string; node: string }>;
+    };
+    assert.equal(body.request.id, requestId);
+    assert.equal(body.request.status, "success");
+    // route event from router + 2 strategy events
+    assert.ok(body.trace.length >= 3);
+    assert.equal(body.trace[0]?.type, "route");
+    const types = body.trace.map((e) => e.type);
+    assert.ok(types.includes("thought"));
+    assert.ok(types.includes("answer"));
+    assert.deepEqual(
+      body.trace.map((e) => e.type),
+      (json.trace as Array<{ type: string }>).map((e) => e.type),
+    );
+  });
+});
+
+test("015: GET /requests/:id 404 unknown and 400 non-uuid", async () => {
+  const app = testApp({ requests: memoryRequests() });
+  await withServer(app, async (baseUrl) => {
+    const missing = await fetch(
+      `${baseUrl}/requests/66666666-6666-4666-8666-666666666666`,
+    );
+    assert.equal(missing.status, 404);
+    const missingJson = (await missing.json()) as { error: string };
+    assert.equal(missingJson.error, "request_not_found");
+
+    const bad = await fetch(`${baseUrl}/requests/not-a-uuid`);
+    assert.equal(bad.status, 400);
+    const badJson = (await bad.json()) as { error: string };
+    assert.equal(badJson.error, "validation_error");
+  });
+});
+
+test("015: persist failure still returns 200 and logs request_persist_failed", async () => {
+  const lines: string[] = [];
+  const logger = createLogger({ write: (line) => lines.push(line) });
+  const requests = {
+    save() {
+      throw new Error("disk full");
+    },
+    getById() {
+      return null;
+    },
+    stats() {
+      return {
+        total: 0,
+        errors: 0,
+        tokens: 0,
+        costUsd: 0,
+        latency: { p50: null, p95: null },
+        byRoute: {},
+        byModel: {},
+      };
+    },
+  };
+  const app = testApp({ requests, logger });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json, headers } = await postChat(baseUrl, { message: "ok" });
+    assert.equal(status, 200);
+    assert.equal(json.requestId, headers.get("x-request-id"));
+    const persistFailed = lines
+      .map((line) => JSON.parse(line.trim()) as { event: string; requestId?: string })
+      .find((row) => row.event === "request_persist_failed");
+    assert.ok(persistFailed);
+    assert.equal(persistFailed.requestId, json.requestId);
+  });
+});
+
+test("015: GET /stats?since=24h aggregates requests", async () => {
+  const requests = memoryRequests();
+  const now = Date.now();
+  requests.save({
+    id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    createdAt: now - 1000,
+    finishedAt: now,
+    status: "success",
+    httpStatus: 200,
+    metrics: {
+      llmCalls: 1,
+      latencyMs: 12,
+      promptTokens: 100,
+      route: "react",
+      modelUsed: "openai/gpt-4o-mini:free",
+    },
+    trace: [],
+  });
+  const app = testApp({ requests });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/stats?since=24h`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      since: string;
+      total: number;
+      errors: number;
+      tokens: number;
+      costUsd: number;
+      byRoute: Record<string, { total: number }>;
+      byModel: Record<string, { costUsd: number }>;
+    };
+    assert.equal(body.since, "24h");
+    assert.equal(body.total, 1);
+    assert.equal(body.errors, 0);
+    assert.equal(body.tokens, 100);
+    assert.equal(body.costUsd, 0);
+    assert.equal(body.byRoute.react?.total, 1);
+    assert.equal(body.byModel["openai/gpt-4o-mini:free"]?.costUsd, 0);
+
+    const bad = await fetch(`${baseUrl}/stats?since=yesterday`);
+    assert.equal(bad.status, 400);
+  });
+});
+
+test("016: awaitHumanApproval true returns 202 pending", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const approvals = new MemoryApprovalStore();
+  const app = testApp({
+    react,
+    approvals,
+    corsOrigins: ["http://localhost:5173"],
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "abrir incidente",
+      awaitHumanApproval: true,
+    });
+    assert.equal(status, 202);
+    assert.equal(react.calls, 0);
+    const pending = json.pending as {
+      approvalId: string;
+      summary: string;
+      createdAt: number;
+    };
+    assert.ok(pending.approvalId);
+    assert.equal(pending.summary, "abrir incidente");
+    assert.equal(typeof pending.createdAt, "number");
+    assert.equal(json.answer, undefined);
+  });
+});
+
+test("016: approve runs deferred turn; deny cancels; second approve 404", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const approvals = new MemoryApprovalStore();
+  const app = testApp({ react, approvals });
+
+  await withServer(app, async (baseUrl) => {
+    const pendingRes = await postChat(baseUrl, {
+      message: "fazer algo",
+      awaitHumanApproval: true,
+    });
+    assert.equal(pendingRes.status, 202);
+    const approvalId = (
+      pendingRes.json.pending as { approvalId: string }
+    ).approvalId;
+
+    const approve = await fetch(`${baseUrl}/approvals/${approvalId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", userId: "test-user" }),
+    });
+    assert.equal(approve.status, 200);
+    const approveJson = (await approve.json()) as {
+      answer: string;
+      requestId: string;
+    };
+    assert.equal(approveJson.answer, "echo:fazer algo");
+    assert.equal(react.calls, 1);
+    assert.ok(approve.headers.get("x-request-id"));
+
+    const again = await fetch(`${baseUrl}/approvals/${approvalId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve", userId: "test-user" }),
+    });
+    assert.equal(again.status, 404);
+
+    const pending2 = await postChat(baseUrl, {
+      message: "cancelar",
+      awaitHumanApproval: true,
+    });
+    const approvalId2 = (
+      pending2.json.pending as { approvalId: string }
+    ).approvalId;
+    const deny = await fetch(`${baseUrl}/approvals/${approvalId2}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "deny", userId: "test-user" }),
+    });
+    assert.equal(deny.status, 200);
+    const denyJson = (await deny.json()) as { answer: string; trace: unknown[] };
+    assert.match(denyJson.answer, /cancelada/i);
+    assert.equal(react.calls, 1);
+  });
+});
+
+test("016: CORS OPTIONS /approvals allowlisted includes POST", async () => {
+  const app = testApp({
+    approvals: new MemoryApprovalStore(),
+    corsOrigins: ["http://localhost:5173"],
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const id = "22222222-2222-4222-8222-222222222222";
+    const options = await fetch(`${baseUrl}/approvals/${id}`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://localhost:5173",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    assert.equal(options.status, 204);
+    assert.equal(
+      options.headers.get("access-control-allow-origin"),
+      "http://localhost:5173",
+    );
+    assert.match(
+      options.headers.get("access-control-allow-methods") ?? "",
+      /POST/,
+    );
+  });
+});
+
+test("016: awaitHumanApproval false still 200", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const app = testApp({ react, approvals: new MemoryApprovalStore() });
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "oi",
+      awaitHumanApproval: false,
+    });
+    assert.equal(status, 200);
+    assert.equal(json.answer, "echo:oi");
+    assert.equal(react.calls, 1);
   });
 });

@@ -74,7 +74,7 @@ test("runChat create + historyMessages 0 + persists turn", async () => {
       assert.equal(input.message, "primeira");
       return {
         answer: "resposta",
-        trace: [{ type: "answer", content: "resposta" }],
+        trace: [{ node: "test",  type: "answer", content: "resposta" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -100,7 +100,7 @@ test("runChat second turn injects history", async () => {
       seen.push(input);
       return {
         answer: `echo:${input.message}`,
-        trace: [{ type: "answer", content: `echo:${input.message}` }],
+        trace: [{ type: "answer", content: `echo:${input.message}`, node: "fake" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -131,7 +131,7 @@ test("runChat: promptTokens from strategy appears; omitted when absent", async (
     async run(): Promise<StrategyResult> {
       return {
         answer: "ok",
-        trace: [{ type: "answer", content: "ok" }],
+        trace: [{ node: "test",  type: "answer", content: "ok" }],
         metrics: { llmCalls: 1, latencyMs: 1, promptTokens: 42 },
       };
     },
@@ -147,7 +147,7 @@ test("runChat: promptTokens from strategy appears; omitted when absent", async (
     async run(): Promise<StrategyResult> {
       return {
         answer: "ok",
-        trace: [{ type: "answer", content: "ok" }],
+        trace: [{ node: "test",  type: "answer", content: "ok" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -168,7 +168,7 @@ test("runChat: contextBreakdown always has five keys; empty hist/mem/summary →
     async run(): Promise<StrategyResult> {
       return {
         answer: "ok",
-        trace: [{ type: "answer", content: "ok" }],
+        trace: [{ node: "test",  type: "answer", content: "ok" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -209,7 +209,7 @@ test("runChat: strategy receives builder enrichedMessage (summary envelope)", as
       seen.push(input);
       return {
         answer: "ok",
-        trace: [{ type: "answer", content: "ok" }],
+        trace: [{ node: "test",  type: "answer", content: "ok" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -244,7 +244,7 @@ test("runChat: low budgets → post-cut metrics (historyMessages / breakdown)", 
     async run(): Promise<StrategyResult> {
       return {
         answer: "ok",
-        trace: [{ type: "answer", content: "ok" }],
+        trace: [{ node: "test",  type: "answer", content: "ok" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
@@ -285,7 +285,7 @@ test("runChat: summarizer triggers at 16 msgs; injects summary; no recompute nex
       assert.equal(input.history.length, 8);
       return {
         answer: "ok",
-        trace: [{ type: "answer", content: "ok" }],
+        trace: [{ node: "test",  type: "answer", content: "ok" }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
