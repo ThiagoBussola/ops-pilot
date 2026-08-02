@@ -19,13 +19,14 @@ Na War Room, use a **engrenagem** para apontar a URL da API (default `http://loc
 
 ## GitHub Pages (War Room)
 
-Pré-requisito (uma vez): **Settings → Pages → Source = GitHub Actions**.
+Pré-requisito (uma vez): **Settings → Pages → Source = GitHub Actions**  
+→ https://github.com/ThiagoBussola/ops-pilot/settings/pages
 
 | | |
 |---|---|
-| Workflow | [`.github/workflows/pages.yml`](.github/workflows/pages.yml) |
+| Workflow | [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) |
 | URL | https://thiagobussola.github.io/ops-pilot/ |
-| Trigger | push em `master` (paths `web/**`) ou *Run workflow* |
+| Trigger | push em `master` ou *Run workflow* |
 
 O build de produção no CI usa base `/ops-pilot/` (path do project site no GitHub Pages). Em desenvolvimento local o Vite continua com base `/opspilot/`.
 

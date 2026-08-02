@@ -1,6 +1,7 @@
 # Deploy OpsPilot War Room (web/) to GitHub Pages
 #
-# Prerequisites: Settings → Pages → Source = GitHub Actions
+# Prerequisites (once): Settings → Pages → Source = GitHub Actions
+#   https://github.com/ThiagoBussola/ops-pilot/settings/pages
 
 name: Deploy
 
@@ -14,12 +15,16 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -34,10 +39,11 @@ jobs:
 
       - name: Build
         working-directory: web
-        run: npm run build
+        # Project site path is /ops-pilot/ (repo name); local Vite uses /opspilot/
+        run: npm run build -- --base=/ops-pilot/
 
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: web/dist
 
@@ -50,4 +56,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
