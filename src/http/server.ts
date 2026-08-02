@@ -12,12 +12,19 @@ import {
   resolveStrategy,
   type StrategyRegistry,
 } from "../agents/index.js";
-import { ChatTimeoutError, UnknownStrategyError } from "../domain/errors.js";
+import { runChat } from "../chat/run-chat.js";
+import {
+  ChatTimeoutError,
+  ConversationNotFoundError,
+  UnknownStrategyError,
+} from "../domain/errors.js";
+import type { ConversationStore } from "../domain/types.js";
 import type { ReflectionOpts } from "../strategies/reflect.js";
 import { chatRequestSchema } from "./chat-schema.js";
 
 export interface ChatAppDeps {
   registry: StrategyRegistry;
+  conversations: ConversationStore;
   timeoutMs?: number;
   reflectionOpts?: ReflectionOpts;
 }
@@ -28,7 +35,7 @@ export { createRegistry, listStrategies, resolveStrategy };
 export type { StrategyRegistry };
 
 function runWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new ChatTimeoutError(timeoutMs));
     }, timeoutMs);
@@ -83,19 +90,26 @@ export function createApp(deps: ChatAppDeps): Express {
         return;
       }
 
-      const { message, strategy, reflect } = parsed.data;
+      const { message, strategy, reflect, conversationId } = parsed.data;
       const resolved = resolveStrategy(
         deps.registry,
         strategy,
         reflect,
         deps.reflectionOpts,
       );
-      const result = await runWithTimeout(resolved.run(message), timeoutMs);
+
+      const result = await runChat(
+        deps.conversations,
+        resolved,
+        { message, conversationId },
+        { execute: (promise) => runWithTimeout(promise, timeoutMs) },
+      );
 
       res.status(200).json({
         answer: result.answer,
         trace: result.trace,
         metrics: result.metrics,
+        conversationId: result.conversationId,
       });
     } catch (error) {
       next(error);
@@ -129,6 +143,14 @@ export function createApp(deps: ChatAppDeps): Express {
       res.status(422).json({
         error: "unknown_strategy",
         strategy: error.strategy,
+      });
+      return;
+    }
+
+    if (error instanceof ConversationNotFoundError) {
+      res.status(404).json({
+        error: "conversation_not_found",
+        conversationId: error.conversationId,
       });
       return;
     }

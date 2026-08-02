@@ -21,6 +21,7 @@ O núcleo é um agente LangChain/LangGraph servido sobre OpenRouter.
 npm run dev        # tsx src/index.ts
 npm run arena      # tsx src/arena.ts
 npm run bench      # tsx src/bench.ts
+npm run mcp        # MCP stdio server (opspilot)
 npm test           # node --import tsx --test "src/**/*.test.ts"
 npm run typecheck  # tsc --noEmit
 ```
@@ -53,5 +54,5 @@ Specs são artefatos de primeira classe — criadas, revisadas e versionadas jun
 <!-- SPECKIT START -->
 For additional context about technologies to be used, project structure,
 shell commands, and other important information, read the current plan
-at `specs/004-sqlite-ops-store/plan.md`.
+at `specs/007-persistent-conversation/plan.md`.
 <!-- SPECKIT END -->

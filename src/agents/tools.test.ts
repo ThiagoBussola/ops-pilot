@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  createCheckProviderStatusTool,
   createConsultarRunbookTool,
   createListAlertsTool,
   createListIncidentsTool,
@@ -9,6 +10,7 @@ import {
   createResolveIncidentTool,
   createTools,
 } from "./tools.js";
+import { formatProviderStatus, type FetchLike } from "../tools/check-provider-status.js";
 import { seedOpsStore } from "../store/seed.js";
 import { SqliteOpsStore } from "../store/sqlite-ops-store.js";
 
@@ -94,12 +96,36 @@ test("open_incident normalizes sev2 alias to high (DB canonical)", async () => {
   assert.equal(store.getIncidents("open")[0]?.severity, "high");
 });
 
-test("createTools registers five tools", () => {
+test("createTools registers six tools including check_provider_status", () => {
   const store = seededStore();
   const tools = createTools(store);
-  assert.equal(tools.length, 5);
+  assert.equal(tools.length, 6);
   assert.deepEqual(
     tools.map((t) => t.name),
-    ["list_alerts", "open_incident", "resolve_incident", "list_incidents", "consultar_runbook"],
+    [
+      "list_alerts",
+      "open_incident",
+      "resolve_incident",
+      "list_incidents",
+      "consultar_runbook",
+      "check_provider_status",
+    ],
   );
+});
+
+test("check_provider_status tool invoke with fake fetch (no network)", async () => {
+  const fake: FetchLike = async () =>
+    new Response(
+      JSON.stringify({
+        status: { indicator: "none", description: "All Systems Operational" },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+
+  const tool = createCheckProviderStatusTool({ fetch: fake });
+  const result = String(await tool.invoke({}));
+  assert.equal(result, formatProviderStatus("github", "none", "All Systems Operational"));
+
+  const cf = String(await tool.invoke({ provider: "cloudflare" }));
+  assert.equal(cf, formatProviderStatus("cloudflare", "none", "All Systems Operational"));
 });

@@ -5,7 +5,13 @@ import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import type { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 
-import type { ReasoningStrategy, StrategyResult, TraceEvent } from "../domain/types.js";
+import { formatHistoryForPrompt } from "../chat/run-chat.js";
+import type {
+  ReasoningStrategy,
+  StrategyResult,
+  StrategyRunInput,
+  TraceEvent,
+} from "../domain/types.js";
 
 interface PlanExecuteOptions {
   modelFactory: () => ChatOpenAI;
@@ -147,8 +153,9 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
     this.enableReplanner = options.enableReplanner ?? true;
   }
 
-  async run(input: string): Promise<StrategyResult> {
+  async run(input: StrategyRunInput): Promise<StrategyResult> {
     const startedAt = Date.now();
+    const inputText = formatHistoryForPrompt(input.history, input.message);
     const stepLimit = Math.min(MAX_STEPS, this.maxIterations);
     // Fresh model instances: createReactAgent binds tools onto the LLM and must
     // not share the same instance used for withStructuredOutput planner/replanner.
@@ -356,7 +363,7 @@ export class PlanExecuteStrategy implements ReasoningStrategy {
 
     const result = await graph.invoke(
       {
-        input,
+        input: inputText,
         plan: [],
         done: [],
         answer: "",

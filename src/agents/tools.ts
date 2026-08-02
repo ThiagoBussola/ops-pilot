@@ -4,8 +4,15 @@ import { z } from "zod";
 import { IncidentNotFoundError, RunbookNotFoundError } from "../domain/errors.js";
 import { normalizeSeverity, SEVERITIES } from "../domain/severity.js";
 import type { OpsStore } from "../domain/types.js";
+import {
+  fetchProviderStatus,
+  type FetchLike,
+  type FetchProviderStatusOptions,
+  type ProviderId,
+} from "../tools/check-provider-status.js";
 
-const listAlertsSchema = z.object({
+/** Shared with MCP server — single source of truth for list_alerts input. */
+export const listAlertsSchema = z.object({
   status: z.preprocess(
     (value) => value ?? "firing",
     z
@@ -16,7 +23,8 @@ const listAlertsSchema = z.object({
   ),
 });
 
-const openIncidentSchema = z.object({
+/** Shared with MCP server — single source of truth for open_incident input. */
+export const openIncidentSchema = z.object({
   title: z.string().min(1).describe("Título curto do incidente"),
   service: z
     .string()
@@ -32,7 +40,8 @@ const openIncidentSchema = z.object({
   ),
 });
 
-const resolveIncidentSchema = z.object({
+/** Shared with MCP server — single source of truth for resolve_incident input. */
+export const resolveIncidentSchema = z.object({
   id: z.string().min(1).describe("ID do incidente local a resolver (ex.: inc-1722103456789-a3f2)"),
 });
 
@@ -47,6 +56,17 @@ const listIncidentsSchema = z.object({
 
 const consultarRunbookSchema = z.object({
   service: z.string().min(1).describe("Nome do serviço cujo runbook será consultado"),
+});
+
+const checkProviderStatusSchema = z.object({
+  provider: z.preprocess(
+    (value) => value ?? "github",
+    z
+      .enum(["github", "cloudflare"])
+      .describe(
+        'Provedor externo cuja statuspage pública será consultada: "github" (default) ou "cloudflare".',
+      ),
+  ),
 });
 
 export function createListAlertsTool(store: OpsStore): DynamicStructuredTool<typeof listAlertsSchema> {
@@ -183,6 +203,24 @@ export function createConsultarRunbookTool(
   );
 }
 
+export function createCheckProviderStatusTool(
+  options?: FetchProviderStatusOptions,
+): DynamicStructuredTool<typeof checkProviderStatusSchema> {
+  const fetchFn: FetchLike | undefined = options?.fetch;
+  return tool(
+    async (input) => {
+      const provider = input.provider as ProviderId;
+      return fetchProviderStatus(provider, fetchFn ? { fetch: fetchFn } : undefined);
+    },
+    {
+      name: "check_provider_status",
+      description:
+        "Consulta o status público de um provedor externo (GitHub ou Cloudflare) via statuspage. Quando usar: suspeita de problema externo; dúvida \"é o nosso ou do provedor?\"; dependência aparentemente fora do ar. Quando não usar: inventário local de alertas/incidentes/runbooks (use list_alerts, list_incidents ou consultar_runbook).",
+      schema: checkProviderStatusSchema,
+    },
+  );
+}
+
 export function createTools(store: OpsStore): DynamicStructuredTool[] {
   return [
     createListAlertsTool(store),
@@ -190,5 +228,6 @@ export function createTools(store: OpsStore): DynamicStructuredTool[] {
     createResolveIncidentTool(store),
     createListIncidentsTool(store),
     createConsultarRunbookTool(store),
+    createCheckProviderStatusTool(),
   ];
 }

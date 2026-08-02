@@ -141,7 +141,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   for (const strategyName of args.strategies) {
     try {
       const strategy = createStrategy(strategyName, args.maxIterations);
-      const result = await strategy.run(args.input);
+      const result = await strategy.run({ message: args.input, history: [] });
       printResult(strategyName, result);
     } catch (error) {
       hadErrors = true;

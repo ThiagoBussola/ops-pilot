@@ -55,6 +55,34 @@ export interface TraceEvent {
 export interface ExecutionMetrics {
   llmCalls: number;
   latencyMs: number;
+  /** Messages from conversation history injected into this turn (HTTP /chat). */
+  historyMessages?: number;
+}
+
+export type ConversationMessageRole = "user" | "assistant";
+
+export interface ConversationMessage {
+  id: string;
+  conversationId: string;
+  role: ConversationMessageRole;
+  content: string;
+  createdAt: number;
+}
+
+export interface ConversationStore {
+  create(): string;
+  append(
+    conversationId: string,
+    role: ConversationMessageRole,
+    content: string,
+  ): ConversationMessage;
+  lastMessages(conversationId: string, limit: number): ConversationMessage[];
+}
+
+/** Input for a single strategy turn (current message + prior history). */
+export interface StrategyRunInput {
+  message: string;
+  history: ConversationMessage[];
 }
 
 export interface StrategyResult {
@@ -65,7 +93,7 @@ export interface StrategyResult {
 
 export interface ReasoningStrategy {
   readonly name: string;
-  run(input: string): Promise<StrategyResult>;
+  run(input: StrategyRunInput): Promise<StrategyResult>;
 }
 
 export interface OpsStore {

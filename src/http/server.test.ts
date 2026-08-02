@@ -1,22 +1,28 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import test from "node:test";
 
 import { createRegistry, listStrategies, resolveStrategy } from "../agents/index.js";
-import type { ReasoningStrategy, StrategyResult } from "../domain/types.js";
+import type {
+  ReasoningStrategy,
+  StrategyResult,
+  StrategyRunInput,
+} from "../domain/types.js";
 import type { CritiqueResult } from "../strategies/reflect.js";
+import { SqliteConversationStore } from "../store/sqlite-conversation-store.js";
 import { createApp } from "./server.js";
 
 function fakeStrategy(overrides?: {
   name?: string;
   delayMs?: number;
-  run?: (input: string) => Promise<StrategyResult>;
-}): ReasoningStrategy & { calls: number; inputs: string[] } {
-  const strategy: ReasoningStrategy & { calls: number; inputs: string[] } = {
+  run?: (input: StrategyRunInput) => Promise<StrategyResult>;
+}): ReasoningStrategy & { calls: number; inputs: StrategyRunInput[] } {
+  const strategy: ReasoningStrategy & { calls: number; inputs: StrategyRunInput[] } = {
     name: overrides?.name ?? "fake",
     calls: 0,
     inputs: [],
-    async run(input: string): Promise<StrategyResult> {
+    async run(input: StrategyRunInput): Promise<StrategyResult> {
       strategy.calls += 1;
       strategy.inputs.push(input);
       if (overrides?.delayMs) {
@@ -26,13 +32,17 @@ function fakeStrategy(overrides?: {
         return overrides.run(input);
       }
       return {
-        answer: `echo:${input}`,
-        trace: [{ type: "answer", content: `echo:${input}` }],
+        answer: `echo:${input.message}`,
+        trace: [{ type: "answer", content: `echo:${input.message}` }],
         metrics: { llmCalls: 1, latencyMs: 1 },
       };
     },
   };
   return strategy;
+}
+
+function memoryConversations() {
+  return new SqliteConversationStore(":memory:");
 }
 
 async function withServer(
@@ -72,18 +82,22 @@ async function postChat(
 
 test("US1: POST /chat happy path with fake react strategy", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({ registry: createRegistry({ react }) });
+  const conversations = memoryConversations();
+  const app = createApp({ registry: createRegistry({ react }), conversations });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, { message: "oi" });
     assert.equal(status, 200);
     assert.equal(json.answer, "echo:oi");
+    assert.ok(typeof json.conversationId === "string");
     assert.ok(Array.isArray(json.trace));
     assert.ok(json.metrics && typeof json.metrics === "object");
-    const metrics = json.metrics as { llmCalls: number; latencyMs: number };
+    const metrics = json.metrics as { llmCalls: number; latencyMs: number; historyMessages: number };
     assert.equal(metrics.llmCalls, 1);
     assert.equal(typeof metrics.latencyMs, "number");
+    assert.equal(metrics.historyMessages, 0);
     assert.equal(react.calls, 1);
+    assert.equal(conversations.lastMessages(String(json.conversationId), 12).length, 2);
   });
 });
 
@@ -92,6 +106,7 @@ test("US1: explicit strategy selects registry entry", async () => {
   const other = fakeStrategy({ name: "other" });
   const app = createApp({
     registry: createRegistry({ react, other }),
+    conversations: memoryConversations(),
   });
 
   await withServer(app, async (baseUrl) => {
@@ -111,6 +126,7 @@ test("US1: reflect true with approving critic adds critique overhead", async () 
   const criticCalls: number[] = [];
   const app = createApp({
     registry: createRegistry({ react }),
+    conversations: memoryConversations(),
     reflectionOpts: {
       critic: async (): Promise<CritiqueResult> => {
         criticCalls.push(1);
@@ -136,7 +152,10 @@ test("US1: reflect true with approving critic adds critique overhead", async () 
 
 test("US2: invalid body returns 400 with zod issues", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({ registry: createRegistry({ react }) });
+  const app = createApp({
+    registry: createRegistry({ react }),
+    conversations: memoryConversations(),
+  });
 
   await withServer(app, async (baseUrl) => {
     const wrongField = await postChat(baseUrl, { mensagem: "campo errado" });
@@ -154,7 +173,10 @@ test("US2: invalid body returns 400 with zod issues", async () => {
 
 test("US2: unknown strategy returns 422", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({ registry: createRegistry({ react }) });
+  const app = createApp({
+    registry: createRegistry({ react }),
+    conversations: memoryConversations(),
+  });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, {
@@ -170,7 +192,10 @@ test("US2: unknown strategy returns 422", async () => {
 
 test("US2: omitted strategy and reflect default to react without reflection", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({ registry: createRegistry({ react }) });
+  const app = createApp({
+    registry: createRegistry({ react }),
+    conversations: memoryConversations(),
+  });
 
   await withServer(app, async (baseUrl) => {
     const { status, json } = await postChat(baseUrl, { message: "defaults" });
@@ -188,6 +213,7 @@ test("US3: slow strategy exceeds injected timeout -> 504", async () => {
   const react = fakeStrategy({ name: "react", delayMs: 80 });
   const app = createApp({
     registry: createRegistry({ react }),
+    conversations: memoryConversations(),
     timeoutMs: 20,
   });
 
@@ -203,6 +229,7 @@ test("US3: fast strategy returns 200 under timeout", async () => {
   const react = fakeStrategy({ name: "react" });
   const app = createApp({
     registry: createRegistry({ react }),
+    conversations: memoryConversations(),
     timeoutMs: 5_000,
   });
 
@@ -216,6 +243,7 @@ test("US4: custom-named fake-only registry works end-to-end", async () => {
   const custom = fakeStrategy({ name: "custom-ops" });
   const app = createApp({
     registry: createRegistry({ "custom-ops": custom }),
+    conversations: memoryConversations(),
   });
 
   await withServer(app, async (baseUrl) => {
@@ -243,7 +271,10 @@ test("US4: resolveStrategy with reflect returns reflect: name", () => {
 
 test("POST /chat accepts curl-style body without application/json Content-Type", async () => {
   const react = fakeStrategy({ name: "react" });
-  const app = createApp({ registry: createRegistry({ react }) });
+  const app = createApp({
+    registry: createRegistry({ react }),
+    conversations: memoryConversations(),
+  });
 
   await withServer(app, async (baseUrl) => {
     const response = await fetch(`${baseUrl}/chat`, {
@@ -254,5 +285,113 @@ test("POST /chat accepts curl-style body without application/json Content-Type",
     const json = (await response.json()) as Record<string, unknown>;
     assert.equal(response.status, 200);
     assert.equal(json.answer, "echo:quais incidentes estão abertos?");
+  });
+});
+
+test("persistent: continue conversation reuses conversationId and injects history", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const conversations = memoryConversations();
+  const app = createApp({ registry: createRegistry({ react }), conversations });
+
+  await withServer(app, async (baseUrl) => {
+    const first = await postChat(baseUrl, { message: "turno1" });
+    assert.equal(first.status, 200);
+    const cid = String(first.json.conversationId);
+    const m1 = first.json.metrics as { historyMessages: number };
+    assert.equal(m1.historyMessages, 0);
+
+    const second = await postChat(baseUrl, { message: "turno2", conversationId: cid });
+    assert.equal(second.status, 200);
+    assert.equal(second.json.conversationId, cid);
+    const m2 = second.json.metrics as { historyMessages: number };
+    assert.equal(m2.historyMessages, 2);
+    assert.equal(react.inputs[1]?.history.length, 2);
+    assert.equal(react.inputs[1]?.history[0]?.content, "turno1");
+    assert.equal(react.inputs[1]?.history[1]?.content, "echo:turno1");
+    assert.equal(conversations.lastMessages(cid, 12).length, 4);
+  });
+});
+
+test("persistent: unknown conversationId returns 404 without running strategy", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const app = createApp({
+    registry: createRegistry({ react }),
+    conversations: memoryConversations(),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const missing = randomUUID();
+    const { status, json } = await postChat(baseUrl, {
+      message: "oi",
+      conversationId: missing,
+    });
+    assert.equal(status, 404);
+    assert.equal(json.error, "conversation_not_found");
+    assert.equal(json.conversationId, missing);
+    assert.equal(react.calls, 0);
+  });
+});
+
+test("persistent: invalid conversationId returns 400", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const app = createApp({
+    registry: createRegistry({ react }),
+    conversations: memoryConversations(),
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "oi",
+      conversationId: "nope",
+    });
+    assert.equal(status, 400);
+    assert.equal(json.error, "validation_error");
+    assert.equal(react.calls, 0);
+  });
+});
+
+test("persistent: historyMessages capped at 12", async () => {
+  const react = fakeStrategy({ name: "react" });
+  const conversations = memoryConversations();
+  const cid = conversations.create();
+  for (let i = 0; i < 15; i += 1) {
+    conversations.append(cid, i % 2 === 0 ? "user" : "assistant", `m${i}`);
+  }
+  const app = createApp({ registry: createRegistry({ react }), conversations });
+
+  await withServer(app, async (baseUrl) => {
+    const { status, json } = await postChat(baseUrl, {
+      message: "novo",
+      conversationId: cid,
+    });
+    assert.equal(status, 200);
+    const metrics = json.metrics as { historyMessages: number };
+    assert.equal(metrics.historyMessages, 12);
+    assert.equal(react.inputs[0]?.history.length, 12);
+  });
+});
+
+test("persistent: throwing strategy does not append assistant", async () => {
+  const conversations = memoryConversations();
+  const react = fakeStrategy({
+    name: "react",
+    run: async () => {
+      throw new Error("boom");
+    },
+  });
+  const app = createApp({ registry: createRegistry({ react }), conversations });
+
+  await withServer(app, async (baseUrl) => {
+    const before = conversations.create();
+    // Use known id so we can inspect store after failure
+    const { status } = await postChat(baseUrl, {
+      message: "fail",
+      conversationId: before,
+    });
+    assert.equal(status, 500);
+    const msgs = conversations.lastMessages(before, 12);
+    assert.equal(msgs.length, 1);
+    assert.equal(msgs[0]?.role, "user");
+    assert.equal(msgs[0]?.content, "fail");
   });
 });

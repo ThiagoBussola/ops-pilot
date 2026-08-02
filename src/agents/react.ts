@@ -4,7 +4,7 @@ import { GraphRecursionError } from "@langchain/langgraph";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import type { ChatOpenAI } from "@langchain/openai";
 
-import type { ReasoningStrategy, StrategyResult } from "../domain/types.js";
+import type { ReasoningStrategy, StrategyResult, StrategyRunInput } from "../domain/types.js";
 import { buildTraceFromMessages } from "../trace/builder.js";
 
 interface ReactStrategyOptions {
@@ -25,14 +25,21 @@ export class ReactStrategy implements ReasoningStrategy {
     this.maxIterations = options.maxIterations;
   }
 
-  async run(input: string): Promise<StrategyResult> {
+  async run(input: StrategyRunInput): Promise<StrategyResult> {
     const startedAt = Date.now();
     const model = this.modelFactory();
     const agent = createReactAgent({ llm: model, tools: this.tools });
 
     try {
+      const messages = [
+        ...input.history.map((m) => ({
+          role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
+          content: m.content,
+        })),
+        { role: "user" as const, content: input.message },
+      ];
       const result = await agent.invoke(
-        { messages: [{ role: "user", content: input }] },
+        { messages },
         { recursionLimit: Math.max(3, this.maxIterations * 3) },
       );
       const trace = buildTraceFromMessages(result.messages);

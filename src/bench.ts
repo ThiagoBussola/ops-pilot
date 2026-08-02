@@ -331,7 +331,7 @@ async function runCell(
   const label = strategyLabel(strategyName, args.noReplanner);
 
   try {
-    const result = await strategy.run(scenario.prompt);
+    const result = await strategy.run({ message: scenario.prompt, history: [] });
     const acerto = scenario.check(store, result.answer);
     return {
       cenario: scenario.id,

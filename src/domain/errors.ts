@@ -31,3 +31,13 @@ export class ChatTimeoutError extends Error {
     this.timeoutMs = timeoutMs;
   }
 }
+
+export class ConversationNotFoundError extends Error {
+  readonly conversationId: string;
+
+  constructor(conversationId: string) {
+    super(`Conversation not found: ${conversationId}`);
+    this.name = "ConversationNotFoundError";
+    this.conversationId = conversationId;
+  }
+}

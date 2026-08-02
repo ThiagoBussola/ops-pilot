@@ -1,7 +1,12 @@
 import type { ChatOpenAI } from "@langchain/openai";
 import { z } from "zod";
 
-import type { ReasoningStrategy, StrategyResult, TraceEvent } from "../domain/types.js";
+import type {
+  ReasoningStrategy,
+  StrategyResult,
+  StrategyRunInput,
+  TraceEvent,
+} from "../domain/types.js";
 
 export const critiqueSchema = z.object({
   approved: z.boolean(),
@@ -96,7 +101,7 @@ export function withReflection(
 
   return {
     name: `reflect:${strategy.name}`,
-    async run(input: string): Promise<StrategyResult> {
+    async run(input: StrategyRunInput): Promise<StrategyResult> {
       const startedAt = Date.now();
       let totalLlmCalls = 0;
       let criticCallCount = 0;
@@ -121,7 +126,7 @@ export function withReflection(
         const critiqueResult = await criticFn(
           currentResult.answer,
           currentResult.trace,
-          input,
+          input.message,
         );
         criticCallCount += 1;
 
@@ -137,7 +142,10 @@ export function withReflection(
           break;
         }
 
-        const enrichedInput = enrichInputWithFeedback(input, round, critiqueResult.feedback);
+        const enrichedInput: StrategyRunInput = {
+          message: enrichInputWithFeedback(input.message, round, critiqueResult.feedback),
+          history: input.history,
+        };
         currentResult = await strategy.run(enrichedInput);
         totalLlmCalls += currentResult.metrics.llmCalls;
         accumulatedTrace.push(...currentResult.trace);
